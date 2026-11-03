@@ -6,7 +6,8 @@ answer always gets the same score (D-040):
     metric, sql     every expected figure appears in the answer (7,058; 33.3%), every expected
                     name or period appears too (matched on its first long word, so "TransUnion"
                     counts for TRANSUNION INTERMEDIATE HOLDINGS, INC.), and at least one query ran
-    clarify         no tool was called, and the answer asks exactly one question
+    clarify         no tool was called, and the answer asks exactly one question, or makes one
+                    request without a question mark ("Please reply with one choice from each list")
     cannot_answer   no tool was called, and the answer offers a metric the expected answer names
 
 Figures must be written the way the rules say (R-17): a rate of 33.25% only matches 33.3%;
@@ -69,6 +70,11 @@ UNITS = (
 TENS = "twenty thirty forty fifty sixty seventy eighty ninety".split()
 NUMBER_WORD = re.compile(
     rf"\b(?:({'|'.join(TENS)})(?:[- ]({'|'.join(UNITS[1:10])}))?|({'|'.join(UNITS)}))\b", re.I
+)
+# A clarifying request made without a question mark: "Please reply with one choice from each list".
+REQUEST = re.compile(
+    r"\b(?:please (?:reply|choose|pick|tell|confirm|specify|say)|let me know|tell me|reply with)\b",
+    re.I,
 )
 
 
@@ -189,12 +195,13 @@ def expected_items(question: Question) -> list[tuple[tuple[str, ...], str]]:
     return items
 
 
-def label_patterns(label: str) -> list[re.Pattern] | None:
+def label_patterns(label: str, answer: str = "") -> list[re.Pattern] | None:
     """Ways an answer may write a label, or None for words that need no check.
 
-    A year must appear as written; a month as 2026-01, January 2026 or Jan 2026; a name by
-    its first word of four or more letters that isn't a generic word such as "bank", as a
-    whole word in any case ("TD BANK US HOLDING COMPANY" has none, so "TD" is used).
+    A year must appear as written; a month as 2026-01, January 2026 or Jan 2026, or as the
+    month name alone when the year appears anywhere in the answer, as under a "Month (2026)"
+    heading; a name by its first word of four or more letters that isn't a generic word such
+    as "bank", as a whole word in any case ("TD BANK US HOLDING COMPANY" has none, so "TD").
     """
     if label.lower() in RANKING_WORDS:
         return None
@@ -204,9 +211,11 @@ def label_patterns(label: str) -> list[re.Pattern] | None:
         if not month:
             return [re.compile(rf"\b{year}\b")]
         names = (calendar.month_name[int(month)], calendar.month_abbr[int(month)])
-        return [re.compile(rf"\b{year}-{month}\b")] + [
-            re.compile(rf"\b{name}\.?\s+{year}\b", re.I) for name in names
-        ]
+        patterns = [re.compile(rf"\b{year}-{month}\b")]
+        patterns += [re.compile(rf"\b{name}\.?\s+{year}\b", re.I) for name in names]
+        if re.search(rf"\b{year}\b", answer):
+            patterns += [re.compile(rf"\b{name}\b", re.I) for name in names]
+        return patterns
     words = [w.strip(".,&()'\"") for w in label.split()]
     distinctive = (
         w for w in words if sum(c.isalpha() for c in w) >= 4 and w.lower() not in GENERIC_WORDS
@@ -245,8 +254,10 @@ def _misses(question: Question, answer, layer: SemanticLayer) -> list[str]:
         if steps:
             misses.append(f"called {len(steps)} tool(s) before asking")
         asked = text.count("?")
-        if asked != 1:
+        if asked > 1:
             misses.append(f"asked {asked} questions instead of exactly one")
+        elif asked == 0 and not REQUEST.search(text):
+            misses.append("asked nothing: no question, and no request such as 'please reply'")
         return misses
 
     if question.kind == "cannot_answer":
@@ -266,7 +277,7 @@ def _misses(question: Question, answer, layer: SemanticLayer) -> list[str]:
         if key not in found:
             misses.append(f"missing {value}" + (f" for {name}" if name else ""))
         for label in labels:
-            patterns = label_patterns(label)
+            patterns = label_patterns(label, text)
             if patterns and not any(p.search(text) for p in patterns):
                 misses.append(f"missing {label}")
     return list(dict.fromkeys(misses))

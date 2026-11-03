@@ -20,10 +20,10 @@ The model doesn't give the same answer every time. In the second run of the firs
 | Kind | Passes when |
 | --- | --- |
 | `metric`, `sql` | Every expected figure is in the answer, every expected name or period is too, and at least one query ran |
-| `clarify` | No tool was called, and the answer asks exactly one question (US-09) |
+| `clarify` | No tool was called, and the answer asks exactly one question, or makes one request without a question mark, such as "Please reply with one choice from each list" (US-09, D-045) |
 | `cannot_answer` | No tool was called, and the answer offers a metric the expected answer names, such as the monetary relief rate (US-08) |
 
-Figures are matched as written by the rules (R-17): 7,058 or 7058, and 33.3%, 33.3 % or 33.3 percent, but not 33.25% or "about 7,000". A count up to ninety-nine may also be written as words, such as "Eighteen". Periods are matched as years, or as 2026-01, January 2026 or Jan 2026. Names are matched on their first distinctive word, so "TransUnion" counts for TRANSUNION INTERMEDIATE HOLDINGS, INC. and "Bank of America" for BANK OF AMERICA, NATIONAL ASSOCIATION; words such as "bank" and "financial", which many companies share, are skipped. Because every tied company has its own label, a ranking that leaves out companies tied at the cut-off fails (R-18).
+Figures are matched as written by the rules (R-17): 7,058 or 7058, and 33.3%, 33.3 % or 33.3 percent, but not 33.25% or "about 7,000". A count up to ninety-nine may also be written as words, such as "Eighteen". Periods are matched as years, or as 2026-01, January 2026 or Jan 2026, or as the month name alone when the year appears anywhere in the answer, as in a table headed "Month (2026)" (D-046). Names are matched on their first distinctive word, so "TransUnion" counts for TRANSUNION INTERMEDIATE HOLDINGS, INC. and "Bank of America" for BANK OF AMERICA, NATIONAL ASSOCIATION; words such as "bank" and "financial", which many companies share, are skipped. Because every tied company has its own label, a ranking that leaves out companies tied at the cut-off fails (R-18).
 
 ## Figures no tool returned
 
@@ -49,7 +49,7 @@ The rules have been adjusted once after seeing these results (D-044), so the fir
 
 - The real question bank loads, and a perfect answer to each of the 25 questions passes.
 - Figures, periods and names are matched however they are written, counts written as words included, but a figure with the wrong number of decimal places, a missing row, a missing tied company or a figure with no query behind it fails.
-- Clarifying and cannot-answer replies fail if they run a query, ask two questions or offer no defined metric.
+- Clarifying and cannot-answer replies fail if they run a query, ask two questions, ask nothing or offer no defined metric; a request worded without a question mark passes.
 - A figure no tool returned is flagged without failing the answer; figures from the tool results, the question and the prompt, and dates and ranks, are never flagged.
 - The report counts repeated runs per question, by difficulty and by kind.
 - The evaluate command runs against the planted warehouse with a fake model: it scores each question in its own conversation, tags the log with the question and run, asks every question several times, prints failed answers when no report is written, re-runs single questions without rewriting the report, and writes no report when the API fails.

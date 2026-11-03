@@ -119,7 +119,7 @@ The [analyst rules](docs/09-analyst-rules.md) say what it does; the [design](doc
 The [evaluation design](docs/11-evaluation.md) has the details.
 
 - **Answers computed first.** Each question in `evals/questions.csv` has an expected answer computed in SQL (`evals/answer_key.sql`) before the analyst ever ran.
-- **Scored by code.** Every expected figure and name must be in the answer, from a query that ran; a clarifying question must be exactly one question with no query; a question the data can't answer must run nothing and offer a defined metric instead. The same answer always gets the same score.
+- **Scored by code.** Every expected figure and name must be in the answer, from a query that ran; a clarifying reply must ask exactly one question, or make one request, with no query; a question the data can't answer must run nothing and offer a defined metric instead. The same answer always gets the same score.
 - **Asked three times.** The model's answers vary, so the results show which questions passed every run as well as the pass rate over every answer.
 - **Figures checked against their sources.** Any figure in an answer that no tool returned is listed, since the analyst should never do its own arithmetic.
 - **Reported by difficulty and kind,** with the measured cost per 100 questions and every failed answer.

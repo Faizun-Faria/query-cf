@@ -126,6 +126,27 @@ def test_every_expected_row_must_be_in_the_answer():
     assert misses("Q02", words) == ["missing 33.2% for 2025", "missing 2025"]
 
 
+MONTHS = [
+    ("January", "9,516"),
+    ("February", "7,401"),
+    ("March", "8,325"),
+    ("April", "8,229"),
+    ("May", "7,919"),
+    ("June", "7,453"),
+    ("July", "8,027"),
+    ("August", "7,996"),
+]
+
+
+def test_a_month_name_alone_counts_when_the_answer_gives_the_year():
+    # As the analyst wrote it in one run of Q22.
+    rows = "\n".join(f"| {month} | {count} |" for month, count in MONTHS)
+    table = f"| Month (2026) | Complaints |\n| --- | ---: |\n{rows}"
+    assert misses("Q22", table) == []
+    without_the_year = table.replace("Month (2026)", "Month")
+    assert misses("Q22", without_the_year)[0] == "missing 2026-01"
+
+
 def test_names_are_matched_on_their_first_long_word():
     rows = [
         ("TransUnion", "4,785,659"),
@@ -177,6 +198,19 @@ def test_a_clarifying_answer_asks_exactly_one_question_and_runs_nothing():
     two = "Which measure do you mean? And for which period?"
     assert misses("Q04", two, steps=[]) == ["asked 2 questions instead of exactly one"]
     assert misses("Q04", one) == ["called 1 tool(s) before asking"]
+
+
+def test_a_clarifying_request_without_a_question_mark_counts_as_the_question():
+    # As the analyst wrote it in two runs of Q04.
+    request = (
+        'I need to know two things before I run anything: what "worst" should measure, and '
+        "which period to use. Please reply with one choice from each list:\n\n**Measure**\n"
+        "- Complaint count\n- Timely response rate\n\n**Period**\n- All time\n- Last year (2025)"
+    )
+    assert misses("Q04", request, steps=[]) == []
+    assert misses("Q04", "Let me know which measure and period to use.", steps=[]) == []
+    [reason] = misses("Q04", "Worst could mean several things.", steps=[])
+    assert reason.startswith("asked nothing")
 
 
 def test_a_cannot_answer_reply_offers_a_defined_metric_and_runs_nothing():
