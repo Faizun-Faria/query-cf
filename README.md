@@ -23,6 +23,7 @@ Framing documents:
 - [Semantic profile of the marts](docs/06-semantic-profile.md)
 - [Semantic layer design](docs/07-semantic-layer.md)
 - [Metric catalog](docs/08-metric-catalog.md)
+- [Analyst rules](docs/09-analyst-rules.md)
 
 ## Data
 
