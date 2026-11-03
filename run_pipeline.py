@@ -10,11 +10,16 @@
     python run_pipeline.py check-semantic   # phase 3: run every definition on the warehouse
     python run_pipeline.py catalog          # phase 3: regenerate docs/08-metric-catalog.md
 
+    python run_pipeline.py check-accounts   # phase 4: test the Claude API key and MongoDB
+    python run_pipeline.py ask "How many credit card complaints did Citi receive in 2025?"
+    python run_pipeline.py chat             # phase 4: questions and follow-ups in a row
+
     python run_pipeline.py ingest --export CCDB_Export_21_August_2026.zip
 
 Raw files land in data/raw; the audit tables and the warehouse live in
 data/warehouse/query_cf.duckdb. Set QUERY_CF_RAW=s3://bucket/prefix to land
-raw files in S3 instead.
+raw files in S3 instead. The analyst reads ANTHROPIC_API_KEY and QUERY_CF_MONGODB_URI
+from .env (see .env.example).
 """
 
 from __future__ import annotations
@@ -90,6 +95,13 @@ def build_parser() -> argparse.ArgumentParser:
     catalog = commands.add_parser("catalog", help="regenerate the metric catalog document")
     catalog.add_argument("--out", type=Path, default=CATALOG)
     commands.add_parser("check-semantic", help="run every semantic definition on the warehouse")
+
+    commands.add_parser(
+        "check-accounts", help="check the Claude API key, MongoDB and the warehouse, at no cost"
+    )
+    ask = commands.add_parser("ask", help="ask the AI analyst one question in plain English")
+    ask.add_argument("question")
+    commands.add_parser("chat", help="ask the AI analyst questions and follow-ups in a row")
     return parser
 
 
@@ -266,6 +278,164 @@ def cmd_check_semantic(args: argparse.Namespace) -> int:
     return 0
 
 
+def make_client():
+    """The Claude API client; it reads ANTHROPIC_API_KEY. Tests replace this function."""
+    import anthropic
+
+    return anthropic.Anthropic()
+
+
+def start_analyst(args: argparse.Namespace):
+    """The analyst over the warehouse, or None after saying what's missing."""
+    from query_cf import analyst, guard, questionlog
+    from query_cf.tools import Toolbox
+
+    settings = analyst.load_settings()
+    if not os.environ.get(analyst.API_KEY_VARIABLE, "").strip():
+        print(f"{analyst.API_KEY_VARIABLE} isn't set. Add it to .env (see .env.example).")
+        return None
+    if not Path(args.db).exists():
+        print(f"No warehouse at {args.db}. Run: python run_pipeline.py all")
+        return None
+    conn = guard.connect(args.db)
+    try:
+        conn.execute("select 1 from marts.fct_complaints limit 1")
+    except duckdb.CatalogException:
+        conn.close()
+        print("The marts aren't built yet. Run: python run_pipeline.py transform")
+        return None
+    log, problem = questionlog.open_log(
+        settings.log_database, settings.log_collection, settings.log_file
+    )
+    if problem:
+        print(f"Note: {problem}; questions are logged to {settings.log_file}")
+    return analyst.Analyst(make_client(), Toolbox(semantic.load_layer(), conn), settings, log)
+
+
+def plural(count: int, word: str) -> str:
+    return f"{count:,} {word}{'' if count == 1 else 's'}"
+
+
+def print_answer(answer) -> None:
+    print(answer.text)
+    print("\nHow this was worked out")
+    if not answer.steps:
+        print("  No queries were run.")
+    for n, step in enumerate(answer.steps, 1):
+        result, tool = step.get("result") or {}, step["tool"]
+        if not step["ok"]:
+            summary = step["error"]
+        elif tool == "list_values":
+            found = plural(len(result["values"]), f"{result['dimension']} value")
+            summary = f"{found} containing '{result['contains']}'"
+        elif tool == "run_sql":
+            rows = plural(result["rows_returned"], "row")
+            summary = f"{rows}. Why SQL: {step['input'].get('reason', '')}"
+        else:
+            rows = plural(result["rows_returned"], "row")
+            summary = f"{rows} from {result['complaints_matched']} complaints"
+        print(f"  {n}. {tool}: {summary}")
+        if step.get("sql") or tool == "run_sql":
+            sql = step.get("sql") or step["input"].get("sql", "")
+            print("\n".join(f"       {line}" for line in sql.splitlines()))
+    usage = answer.usage
+    prompt = sum(
+        usage[k] for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    )
+    print(
+        f"\n{answer.model_version or 'No model'} answered in "
+        f"{plural(usage['requests'], 'request')}: "
+        f"{prompt:,} input tokens ({usage['cache_read_input_tokens']:,} from the cache) and "
+        f"{usage['output_tokens']:,} output tokens, ${answer.cost_usd:.4f}"
+    )
+    if answer.log_location:
+        print(f"Logged to {answer.log_location}")
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    analyst = start_analyst(args)
+    if analyst is None:
+        return 1
+    try:
+        answer = analyst.ask(args.question)
+    finally:
+        analyst.toolbox.conn.close()
+    print_answer(answer)
+    return 0 if answer.outcome == "answered" else 1
+
+
+def cmd_chat(args: argparse.Namespace) -> int:
+    analyst = start_analyst(args)
+    if analyst is None:
+        return 1
+    print("Ask about the complaints archive. Follow-up questions build on earlier answers.")
+    print("Press Enter on an empty line to finish.")
+    try:
+        while True:
+            try:
+                question = input("\nYou: ").strip()
+            except EOFError:
+                break
+            if question.lower() in ("", "exit", "quit"):
+                break
+            print()
+            print_answer(analyst.ask(question))
+    finally:
+        analyst.toolbox.conn.close()
+    return 0
+
+
+def cmd_check_accounts(args: argparse.Namespace) -> int:
+    import anthropic
+
+    from query_cf import analyst, guard, questionlog
+
+    settings = analyst.load_settings()
+    problems = 0
+    if not os.environ.get(analyst.API_KEY_VARIABLE, "").strip():
+        print(f"Claude API: {analyst.API_KEY_VARIABLE} isn't set. Add it to .env.")
+        problems += 1
+    else:
+        try:
+            model = make_client().models.retrieve(settings.model)
+            print(f"Claude API: OK, {model.id} ({model.display_name}) is available to this key")
+        except anthropic.APIError as exc:
+            print(f"Claude API: {analyst.describe_api_error(exc)}")
+            problems += 1
+
+    uri = os.environ.get(questionlog.URI_VARIABLE, "").strip()
+    if not uri:
+        print(f"MongoDB: {questionlog.URI_VARIABLE} isn't set. Add it to .env.")
+        problems += 1
+    else:
+        try:
+            questionlog.check_mongo(uri, settings.log_database)
+            print(f"MongoDB: OK, the database user can write to {settings.log_database}")
+        except Exception as exc:  # every failure is reported, whatever the driver raises
+            print(f"MongoDB: {questionlog.describe_mongo_error(exc)}")
+            problems += 1
+
+    if not Path(args.db).exists():
+        print(f"Warehouse: no warehouse at {args.db}. Run: python run_pipeline.py all")
+        problems += 1
+    else:
+        conn = guard.connect(args.db)
+        try:
+            count = conn.execute("select count(*) from marts.fct_complaints").fetchone()[0]
+            print(f"Warehouse: OK, {count:,} complaints in marts.fct_complaints")
+        except duckdb.CatalogException:
+            print("Warehouse: the marts aren't built yet. Run: python run_pipeline.py transform")
+            problems += 1
+        finally:
+            conn.close()
+
+    if problems:
+        print(f"\n{problems} problem(s) to fix before asking questions.")
+        return 1
+    print('\nEverything is ready. Try: python run_pipeline.py ask "How many complaints in 2025?"')
+    return 0
+
+
 def print_table(columns: list[str], rows: list[tuple]) -> None:
     cells = [columns] + [["" if v is None else str(v) for v in row] for row in rows]
     widths = [max(len(row[i]) for row in cells) for i in range(len(columns))]
@@ -305,6 +475,9 @@ COMMANDS = {
     "query": cmd_query,
     "catalog": cmd_catalog,
     "check-semantic": cmd_check_semantic,
+    "check-accounts": cmd_check_accounts,
+    "ask": cmd_ask,
+    "chat": cmd_chat,
 }
 
 
@@ -320,5 +493,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
+def load_env() -> None:
+    """Read .env next to this file; variables already set keep their values."""
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+
+
 if __name__ == "__main__":
+    load_env()
+    if hasattr(sys.stdout, "reconfigure"):  # never crash on a character the console can't show
+        sys.stdout.reconfigure(errors="replace")
     sys.exit(main())

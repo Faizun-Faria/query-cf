@@ -78,7 +78,7 @@ Every conversation starts with the [metric catalog](08-metric-catalog.md): 8 met
 
 - **R-15.** Answer first: one sentence with the figures, then a short table when there are several rows.
 - **R-16.** Every number comes from a tool result. A derived figure, such as a change between years or a share of a total, is computed in the query, not by the model.
-- **R-17.** Counts are exact, with thousands separators (7,058). Rates and shares have one decimal place and a % sign (33.3%).
+- **R-17.** Counts are exact, with thousands separators (1,234). Rates and shares have one decimal place and a % sign (12.3%).
 - **R-18.** A ranking is listed in order with its values and keeps every row tied at the cut-off, saying so (D-034, Q12). A ranking by count notes that large companies rank high partly through volume (Q10).
 - **R-19.** A ranking by rate leaves out companies or groups with fewer than 100 complaints in the period, unless the question sets its own minimum, and says which minimum it used (D-032).
 - **R-20.** After the figures, say how they were worked out: the metric, the period, every filter and named filter, and the exact company names. An answer from SQL also says why no metric query could answer it.
@@ -94,14 +94,14 @@ Every conversation starts with the [metric catalog](08-metric-catalog.md): 8 met
 
 | Rule | How |
 | --- | --- |
-| Only read-only SQL on `marts.fct_complaints`, `marts.dim_company`, `marts.dim_product` and `marts.dim_date` | `run_sql` parses every query with sqlglot first; anything else is blocked, not run, and logged (D-006, US-10) |
+| Only read-only SQL on `marts.fct_complaints`, `marts.dim_company`, `marts.dim_product` and `marts.dim_date` | `run_sql` parses every query with sqlglot first; anything else is blocked, not run, and logged (D-006, US-10). Every query also runs on a read-only connection that can't touch files (D-038) |
 | Narrative text can't be read | `marts.complaint_narratives` is not on the allowlist (D-033) |
 | `run_sql` explains itself | A call without a reason, or naming an unknown metric, is refused. It returns the warnings of the metrics it follows, plus `reports_not_findings` |
 | Warnings travel with answers | `query_metrics` returns the warnings of every definition it used |
 | Ties at the cut-off are visible | `query_metrics` with a top N reports when the next row ties with the last one kept |
 | Answers show their working | The SQL and row count shown with an answer come from the tool results, not from the model's text (US-07) |
-| Results stay small | `run_sql` returns at most 200 rows, and `list_values` at most 25 values |
-| Every question is logged | The question, plan, SQL, row count, answer, model version and timestamp (US-11) |
+| Results stay small | `run_sql` returns at most 200 rows, `list_values` at most 25 values, and any query is stopped after 30 seconds |
+| Every question is logged | The question, every tool call as the plan, the SQL, row counts, the answer, the model version and a timestamp (US-11); see the [AI analyst design](10-ai-analyst.md) |
 
 ## How the evaluation set tests the rules
 

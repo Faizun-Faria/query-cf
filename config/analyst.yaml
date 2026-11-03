@@ -1,0 +1,22 @@
+# The AI analyst's model and limits (phase 4). A different model or effort level gives
+# different answers, so re-run the evaluation set before changing either (US-12).
+
+model: claude-haiku-5-5   # D-036
+effort: high              # low, medium, high, xhigh or max: how much the model thinks
+max_tokens: 16000         # per model response, thinking included
+max_tool_calls: 12        # per question; the analyst must answer once it reaches this
+
+# US dollars per million tokens, used to report what each question cost. Claude Haiku 5.5
+# has two price cards, chosen by the length of each request's prompt. Cache writes cost
+# 1.25 times the input price and cache reads 0.1 times.
+prices:
+  standard: {input: 0.10, output: 0.50}
+  long: {input: 0.50, output: 2.50}
+  long_from_tokens: 100000   # prompts longer than this use the long card
+
+# Where questions are logged. MongoDB Atlas is used when QUERY_CF_MONGODB_URI is set in
+# .env; otherwise, and whenever MongoDB can't be reached, records go to the file.
+log:
+  database: query_cf
+  collection: questions
+  file: data/logs/questions.jsonl
