@@ -26,6 +26,7 @@ Framing documents:
 - [Analyst rules](docs/09-analyst-rules.md)
 - [AI analyst design](docs/10-ai-analyst.md)
 - [Evaluation design](docs/11-evaluation.md) and [results](docs/12-evaluation-results.md)
+- [Chat app design](docs/13-app.md)
 
 ## Data
 
@@ -59,6 +60,7 @@ python run_pipeline.py check-accounts   # check the Claude API key and MongoDB, 
 python run_pipeline.py ask "How many credit card complaints did Citi receive in 2025?"
 python run_pipeline.py chat             # questions and follow-ups in a row
 python run_pipeline.py evaluate --runs 3   # score the analyst on evals/questions.csv
+streamlit run app/streamlit_app.py      # the chat app, in your browser
 pytest
 ```
 
@@ -125,6 +127,14 @@ The [evaluation design](docs/11-evaluation.md) has the details.
 - **Reported by difficulty and kind,** with the measured cost per 100 questions and every failed answer.
 - **Re-run before any model change.** A test fails if the committed results came from a different model or effort than the one pinned.
 
+## How the chat app works
+
+The [app design](docs/13-app.md) has the details.
+
+- **The right format for the question.** Code picks it from the shape of the results: a large number for one figure, a line chart for a trend, a bar chart for a ranking, and a short report when several queries ran. The same answer always looks the same.
+- **Every answer shows its working.** Each query's SQL and warnings, and the answer's tokens and cost, are one click away.
+- **A public demo that can't run up a bill.** It reads a small copy of the four mart tables, checked by SHA-256, and stops at 10 questions per visit, $1 of spending a day counted from the question log, and the spend limit on its own API key.
+
 ## Project layout
 
 ```text
@@ -141,8 +151,12 @@ query_cf/               pipeline package
   analyst.py            the Claude tool-use loop, system prompt and cost
   questionlog.py        logs every question to MongoDB Atlas or a local file
   evaluate.py           runs the evaluation questions, scores the answers, writes the results
+  present.py            picks how an answer is shown: a number, a chart or a report
+  webapp.py             the chat app's settings, demo data, usage limits and analyst
+app/                    the Streamlit chat app and the packages its public demo installs
 config/sources/         one YAML file per source
 config/analyst.yaml     the analyst's model, effort level, limits and prices
+config/app.yaml         the chat app's usage limits and where its demo data comes from
 warehouse/              dbt project: seeds, staging, quality and mart models, tests
 semantic/               metrics, dimensions, named filters, company names, warnings, glossary
 evals/                  evaluation questions and the SQL answer key

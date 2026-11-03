@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from query_cf import audit
+from query_cf import audit, webapp
 from query_cf.config import SourceConfig
 from query_cf.storage import LocalStore
 
@@ -27,6 +27,17 @@ def write_export(path: Path, rows, header=HEADER) -> Path:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(path.with_suffix(".csv").name, buffer.getvalue())
     return path
+
+
+@pytest.fixture(autouse=True)
+def no_real_services(monkeypatch):
+    """No test may reach the Claude API or MongoDB, even on a machine with a real .env.
+
+    Tests that need a key or an address set a fake one themselves.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("QUERY_CF_MONGODB_URI", raising=False)
+    monkeypatch.setattr(webapp, "ENV_FILE", Path(__file__).with_name("no-such-file.env"))
 
 
 @pytest.fixture

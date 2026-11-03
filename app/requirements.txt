@@ -1,0 +1,12 @@
+# What Streamlit Community Cloud installs for the chat app (phase 6). It reads this file
+# before the repository's own requirements.txt, so the demo doesn't install dbt or boto3,
+# which only the pipeline needs. Versions match ../requirements.txt.
+duckdb==2.0.0
+requests==2.34.2
+PyYAML==6.0.3
+anthropic==2.4.0
+sqlglot==30.25.0
+pymongo==4.19.0
+python-dotenv==1.2.4
+streamlit==1.66.1
+plotly==7.1.0

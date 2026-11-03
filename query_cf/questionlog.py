@@ -29,6 +29,20 @@ class FileLog:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         return f"{self.path} (question {record['question_id']})"
 
+    def spent_since(self, since: datetime, source: str) -> float:
+        """What questions tagged with this source have cost since then, in US dollars."""
+        if not self.path.exists():
+            return 0.0
+        total = 0.0
+        with self.path.open(encoding="utf-8") as f:
+            for line in f:
+                record = json.loads(line)
+                if (record.get("tags") or {}).get("source") != source:
+                    continue
+                if datetime.fromisoformat(str(record["asked_at"])) >= since:
+                    total += record.get("cost_usd") or 0.0
+        return total
+
 
 class MongoLog:
     """Writes to <database>.<collection>; falls back to a FileLog when the write fails."""
@@ -54,6 +68,20 @@ class MongoLog:
             where = self.fallback.write(record)
             return f"{where}; MongoDB failed: {str(exc).splitlines()[0][:120]}"
         return f"MongoDB {self.name} (question {record['question_id']})"
+
+    def spent_since(self, since: datetime, source: str) -> float:
+        """What questions tagged with this source have cost since then, in US dollars.
+
+        Raises PyMongoError when MongoDB can't be reached, so the caller can stop spending
+        rather than guess; answers that fell back to the file are counted too.
+        """
+        match = {"tags.source": source, "asked_at": {"$gte": since}}
+        totals = list(
+            self.collection.aggregate(
+                [{"$match": match}, {"$group": {"_id": None, "total": {"$sum": "$cost_usd"}}}]
+            )
+        )
+        return (totals[0]["total"] if totals else 0.0) + self.fallback.spent_since(since, source)
 
 
 def check_mongo(uri: str, database: str) -> None:

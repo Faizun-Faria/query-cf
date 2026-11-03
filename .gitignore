@@ -18,3 +18,4 @@ warehouse/.user.yml
 
 # Secrets
 .env
+.streamlit/secrets.toml

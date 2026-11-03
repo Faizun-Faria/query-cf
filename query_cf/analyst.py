@@ -30,7 +30,7 @@ import yaml
 
 from query_cf import guard
 from query_cf.semantic import SemanticLayer, render_catalog
-from query_cf.tools import Toolbox, ToolError
+from query_cf.tools import HIDDEN_FROM_MODEL, Toolbox, ToolError
 
 ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_FILE = ROOT / "config" / "analyst.yaml"
@@ -248,7 +248,7 @@ class Analyst:
         step["seconds"] = round(time.perf_counter() - started, 3)
 
         if step["ok"]:
-            shown = {k: v for k, v in step["result"].items() if k != "sql"}
+            shown = {k: v for k, v in step["result"].items() if k not in HIDDEN_FROM_MODEL}
             content, is_error = json.dumps(shown, ensure_ascii=False), False
         else:
             content, is_error = step["error"], True

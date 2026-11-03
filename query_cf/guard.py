@@ -98,13 +98,16 @@ def check_sql(sql: str) -> exp.Expression:
     return tree
 
 
-def connect(db: str | Path) -> duckdb.DuckDBPyConnection:
-    """The warehouse, read-only, with file and network access off and settings locked."""
-    return duckdb.connect(
-        str(db),
-        read_only=True,
-        config={"enable_external_access": False, "lock_configuration": True},
-    )
+def connect(db: str | Path, memory_limit: str | None = None) -> duckdb.DuckDBPyConnection:
+    """The warehouse, read-only, with file and network access off and settings locked.
+
+    A memory limit, such as "1GB", keeps a small host such as the public demo's from running
+    out; it can't be changed afterwards, since the settings are locked.
+    """
+    config = {"enable_external_access": False, "lock_configuration": True}
+    if memory_limit:
+        config["memory_limit"] = memory_limit
+    return duckdb.connect(str(db), read_only=True, config=config)
 
 
 def execute(

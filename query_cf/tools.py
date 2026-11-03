@@ -13,6 +13,7 @@ model is told about so it can try again.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 import duckdb
 
@@ -30,6 +31,17 @@ MAX_SQL_ROWS = 200
 MAX_VALUES = 25
 TIMEOUT_SECONDS = 30.0
 PERCENT_SUFFIXES = ("_rate", "_share")
+# Result keys for people and charts, not for the model: the SQL is shown next to the answer,
+# and the raw values only draw charts, so the model copies the formatted rows instead.
+HIDDEN_FROM_MODEL = ("sql", "values", "percent_columns")
+
+
+def _plain(row) -> list:
+    """A result row with dates as ISO text and decimals as floats, so it can go in JSON."""
+    return [
+        v.isoformat() if isinstance(v, date) else float(v) if isinstance(v, Decimal) else v
+        for v in row
+    ]
 
 
 class ToolError(ValueError):
@@ -177,6 +189,8 @@ class Toolbox:
             "notes": list(compiled.notes),
             "warnings": list(compiled.caveats),
             "sql": compiled.sql,
+            "values": [_plain(row) for row in rows],
+            "percent_columns": list(compiled.percent_columns),
         }
         return result
 
@@ -260,6 +274,8 @@ class Toolbox:
             "truncated": truncated,
             "warnings": [self.layer.caveats[c] for c in caveat_ids],
             "sql": sql,
+            "values": [_plain(row) for row in rows],
+            "percent_columns": [c for c in columns if c.endswith(PERCENT_SUFFIXES)],
         }
 
     # --- Definitions sent to the model ---------------------------------------------------------

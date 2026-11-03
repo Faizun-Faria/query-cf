@@ -14,6 +14,7 @@
     python run_pipeline.py ask "How many credit card complaints did Citi receive in 2025?"
     python run_pipeline.py chat             # phase 4: questions and follow-ups in a row
     python run_pipeline.py evaluate         # phase 5: score the analyst on evals/questions.csv
+    python run_pipeline.py demo-warehouse   # phase 6: the small copy the public demo downloads
 
     python run_pipeline.py ingest --export CCDB_Export_21_August_2026.zip
 
@@ -33,7 +34,7 @@ from pathlib import Path
 
 import duckdb
 
-from query_cf import audit, load, semantic
+from query_cf import audit, load, present, semantic
 from query_cf.config import DEFAULT_CONFIG_DIR, ConfigError, load_sources
 from query_cf.ingest import ingest_source
 from query_cf.storage import open_store
@@ -43,6 +44,7 @@ DEFAULT_DB = os.environ.get("QUERY_CF_DB", "data/warehouse/query_cf.duckdb")
 CATALOG = Path(__file__).resolve().parent / "docs" / "08-metric-catalog.md"
 QUESTIONS = Path(__file__).resolve().parent / "evals" / "questions.csv"
 REPORT = Path(__file__).resolve().parent / "docs" / "12-evaluation-results.md"
+DEMO_FILE = Path("data") / "demo" / "query_cf_demo.duckdb"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -123,6 +125,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="only this question, such as Q04 (repeatable); the report isn't rewritten",
     )
     evaluate.add_argument("--report", type=Path, help=f"results file (default {REPORT.name})")
+    demo = commands.add_parser(
+        "demo-warehouse", help="copy the four mart tables the analyst reads, for the public demo"
+    )
+    demo.add_argument("--out", type=Path, default=DEMO_FILE, help=f"(default {DEMO_FILE})")
     return parser
 
 
@@ -333,42 +339,17 @@ def start_analyst(args: argparse.Namespace):
     return analyst.Analyst(make_client(), Toolbox(semantic.load_layer(), conn), settings, log)
 
 
-def plural(count: int, word: str) -> str:
-    return f"{count:,} {word}{'' if count == 1 else 's'}"
-
-
 def print_answer(answer) -> None:
     print(answer.text)
     print("\nHow this was worked out")
     if not answer.steps:
         print("  No queries were run.")
     for n, step in enumerate(answer.steps, 1):
-        result, tool = step.get("result") or {}, step["tool"]
-        if not step["ok"]:
-            summary = step["error"]
-        elif tool == "list_values":
-            found = plural(len(result["values"]), f"{result['dimension']} value")
-            summary = f"{found} containing '{result['contains']}'"
-        elif tool == "run_sql":
-            rows = plural(result["rows_returned"], "row")
-            summary = f"{rows}. Why SQL: {step['input'].get('reason', '')}"
-        else:
-            rows = plural(result["rows_returned"], "row")
-            summary = f"{rows} from {result['complaints_matched']} complaints"
-        print(f"  {n}. {tool}: {summary}")
-        if step.get("sql") or tool == "run_sql":
-            sql = step.get("sql") or step["input"].get("sql", "")
+        summary, sql = present.describe_step(step)
+        print(f"  {n}. {step['tool']}: {summary}")
+        if sql:
             print("\n".join(f"       {line}" for line in sql.splitlines()))
-    usage = answer.usage
-    prompt = sum(
-        usage[k] for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
-    )
-    print(
-        f"\n{answer.model_version or 'No model'} answered in "
-        f"{plural(usage['requests'], 'request')}: "
-        f"{prompt:,} input tokens ({usage['cache_read_input_tokens']:,} from the cache) and "
-        f"{usage['output_tokens']:,} output tokens, ${answer.cost_usd:.4f}"
-    )
+    print(f"\n{present.usage_line(answer)}")
     if answer.log_location:
         print(f"Logged to {answer.log_location}")
 
@@ -430,7 +411,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     if analyst is None:
         return 1
     settings = analyst.settings
-    asking = plural(len(questions), "question")
+    asking = present.plural(len(questions), "question")
     times = f", {args.runs} times each" if args.runs > 1 else ""
     print(f"Asking {asking}{times} with {settings.model} at {settings.effort} effort")
     try:
@@ -474,8 +455,41 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         return 0
     report.parent.mkdir(parents=True, exist_ok=True)
     text = evaluate.render_report(results, settings, analyst.version, datetime.now(UTC))
-    report.write_text(text, encoding="utf-8")
+    report.write_text(text, encoding="utf-8", newline="\n")  # Unix line endings, as in git
     print(f"Results written to {report}")
+    return 0
+
+
+def cmd_demo_warehouse(args: argparse.Namespace) -> int:
+    from query_cf import guard, webapp
+
+    if not Path(args.db).exists():
+        print(f"No warehouse at {args.db}. Run: python run_pipeline.py all")
+        return 1
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)
+    source = str(Path(args.db).resolve()).replace("'", "''")
+    conn = duckdb.connect(str(out))
+    try:
+        conn.execute(f"attach '{source}' as source (read_only)")
+        conn.execute("create schema marts")
+        rows = []
+        for schema, table in sorted(guard.ALLOWED_TABLES):
+            conn.execute(f"create table {schema}.{table} as select * from source.{schema}.{table}")
+            count = conn.execute(f"select count(*) from {schema}.{table}").fetchone()[0]
+            rows.append((f"{schema}.{table}", f"{count:,}"))
+        conn.execute("detach source")
+        conn.execute("checkpoint")
+    except duckdb.CatalogException:
+        print("The marts aren't built yet. Run: python run_pipeline.py transform")
+        return 1
+    finally:
+        conn.close()
+    print_table(["table", "rows"], rows)
+    megabytes = out.stat().st_size / 1_000_000
+    print(f"\nWrote {out}: {megabytes:,.0f} MB, SHA-256 {webapp.sha256_of(out)}")
+    print("Upload it as a GitHub release asset, then put its URL and SHA-256 in config/app.yaml.")
     return 0
 
 
@@ -573,6 +587,7 @@ COMMANDS = {
     "ask": cmd_ask,
     "chat": cmd_chat,
     "evaluate": cmd_evaluate,
+    "demo-warehouse": cmd_demo_warehouse,
 }
 
 

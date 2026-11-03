@@ -1,0 +1,20 @@
+# The chat app and its public demo (phase 6).
+
+# What one visitor and one day may cost the demo (D-053). The Anthropic Console's monthly
+# spend limit on the demo's own API key is the last line behind these.
+limits:
+  questions_per_session: 10
+  max_question_chars: 500
+  daily_budget_usd: 1.00
+
+# The demo's copy of the warehouse: only the four mart tables the analyst reads (D-052),
+# made by `python run_pipeline.py demo-warehouse` and uploaded as a GitHub release asset.
+# The app downloads it on first start when no full warehouse is present, and checks its
+# SHA-256 before using it. Fill in url and sha256 after the upload.
+demo_data:
+  url: ""
+  sha256: ""
+  file: data/demo/query_cf_demo.duckdb
+
+# Streamlit Community Cloud gives an app at most about 2.7 GB of memory.
+duckdb_memory_limit: 1GB
