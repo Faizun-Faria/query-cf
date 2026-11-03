@@ -98,7 +98,7 @@ def test_the_questions_file_is_checked(tmp_path, header_or_row):
     [
         ("Q01", "Capital One received 7,058 credit card complaints in 2024."),
         ("Q01", "Capital One received 7058 credit card complaints in 2024."),
-        ("Q02", "2022: 31.9%, 2023: 36.5 %, 2024: 39.0 percent and 2025: 33.3%."),
+        ("Q02", "2022: 31.9%, 2023: 36.5 %, 2024: 39.0 percent and 2025: 33.2%."),
         (
             "Q22",
             "January 2026: 9,516; Feb 2026: 7,401; March 2026: 8,325; April 2026: 8,229; "
@@ -116,14 +116,14 @@ def test_figures_must_match_to_the_decimal_place_the_rules_set():
         "missing 31.9% for 2022",
         "missing 36.5% for 2023",
         "missing 39.0% for 2024",
-        "missing 33.3% for 2025",
+        "missing 33.2% for 2025",
     ]
     assert misses("Q01", "Capital One received about 7,100.") == ["missing 7,058"]
 
 
 def test_every_expected_row_must_be_in_the_answer():
     words = "2022: 31.9%, 2023: 36.5% and 2024: 39.0%."
-    assert misses("Q02", words) == ["missing 33.3% for 2025", "missing 2025"]
+    assert misses("Q02", words) == ["missing 33.2% for 2025", "missing 2025"]
 
 
 def test_names_are_matched_on_their_first_long_word():
@@ -188,10 +188,49 @@ def test_a_cannot_answer_reply_offers_a_defined_metric_and_runs_nothing():
     assert misses("Q11", "No resolution dates; the timely response rate is close.", steps=[]) == []
 
 
+# --- Counts written as words, and figures no tool returned ---------------------------------------
+
+
+def test_counts_written_as_words_count_as_figures():
+    assert misses("Q03", "Eighteen companies received at least 1,000 complaints.") == []
+    assert evaluate.figures_in("twenty-one, Ninety nine and zero", words=True) >= {"21", "99", "0"}
+    assert "18" not in evaluate.figures_in("Eighteen companies")  # only when asked for words
+
+
+Q02_RESULT = {
+    "input": {"metrics": ["relief_rate"], "group_by": ["received:year"]},
+    "result": {
+        "rows": [["2022", "31.9%", "36,582"], ["2023", "36.5%", "54,413"]],
+        "complaints_matched": "90,995",
+        "warnings": ["Nearly 10% of 2026 complaints were still in progress."],
+    },
+}
+
+
+def test_figures_no_tool_returned_are_flagged_without_failing_the_answer():
+    words = (
+        "The relief rate rose from 31.9% in 2022 to 36.5% in 2023, a rise of 4.6 points. "
+        "Together the two years hold 90,995 complaints, and 54,413 + 36,582 = 90,995. "
+        "Nearly 10% of 2026 complaints were still open; the archive holds 17.5 million."
+    )
+    reply = answer(words, steps=[{"tool": "query_metrics", "ok": True, **Q02_RESULT}])
+    known = evaluate.numbers_in("about 17.5 million complaints")  # as the system prompt says
+    verdict = score(QUESTIONS["Q02"], reply, LAYER, known)
+    assert verdict.unsupported == ["4.6"]
+
+
+def test_dates_ranks_and_figures_from_the_question_are_never_flagged():
+    words = "From 1 January to 31 December 2025, 18 companies had at least 1,000 complaints."
+    assert evaluate.unsupported_figures(answer(words), QUESTIONS["Q03"]) == []
+    assert evaluate.unsupported_figures(answer("A total of 256,962."), QUESTIONS["Q02"]) == [
+        "256,962"
+    ]
+
+
 # --- The report -----------------------------------------------------------------------------------
 
 
-def fake_result(question_id, passed, cost=0.002):
+def fake_result(question_id, passed, run=1, unsupported=(), cost=0.002):
     usage = {
         "requests": 2,
         "input_tokens": 100,
@@ -202,24 +241,49 @@ def fake_result(question_id, passed, cost=0.002):
     reply = SimpleNamespace(
         text="Line one.\n\nLine two.", steps=RAN_A_QUERY, usage=usage, cost_usd=cost, seconds=3.0
     )
-    verdict = evaluate.Score(passed, [] if passed else ["missing 7,058"])
-    return evaluate.Result(QUESTIONS[question_id], reply, verdict)
+    verdict = evaluate.Score(passed, [] if passed else ["missing 7,058"], list(unsupported))
+    return evaluate.Result(QUESTIONS[question_id], reply, verdict, run)
 
 
 def test_the_report_shows_accuracy_by_difficulty_and_kind_and_each_failure():
-    results = [fake_result("Q01", True), fake_result("Q02", False), fake_result("Q04", True)]
+    results = [
+        fake_result("Q01", True),
+        fake_result("Q02", False, unsupported=["256,962"]),
+        fake_result("Q04", True),
+    ]
     when = datetime(2026, 11, 3, 18, 0, tzinfo=UTC)
     report = evaluate.render_report(results, load_settings(), "abc123def456", when)
     assert "| Model | `claude-haiku-5-5` |" in report
-    assert "| Passed | 2 of 3 (67%) |" in report
+    assert "| Runs of each question | 1 |" in report
+    assert "| Passed every run | 2 of 3 (67%) |" in report
+    assert "| Answers with figures no tool returned | 1 of 3 (33%) |" in report
     assert "| Cost per 100 questions | $0.20 |" in report
     assert "| Tokens | 3,000 input (2,700 from the cache), 150 output |" in report
-    assert "| easy | 1 of 1 (100%) |" in report and "| medium | 0 of 1 (0%) |" in report
-    assert "| clarify | 1 of 1 (100%) |" in report
-    assert "| Q02 | medium | metric | **fail** | 1 | $0.0020 |" in report
+    assert "| easy | 1 of 1 (100%) | 1 of 1 (100%) |" in report
+    assert "| medium | 0 of 1 (0%) | 0 of 1 (0%) |" in report
+    assert "| Q02 | medium | metric | **0 of 1** | 1 | $0.0020 |" in report
     assert "### Q02: How did the relief rate" in report
-    assert "- **What was wrong:** missing 7,058" in report
+    assert "**Run 1:** missing 7,058. Tools called: query_metrics." in report
     assert "> Line one.\n>\n> Line two." in report
+    assert "- Q02, run 1: 256,962" in report
+
+
+def test_the_report_counts_repeated_runs_per_question():
+    results = [
+        fake_result("Q01", True, run=1),
+        fake_result("Q12", True, run=1),
+        fake_result("Q01", True, run=2),
+        fake_result("Q12", False, run=2),
+    ]
+    when = datetime(2026, 11, 3, 18, 0, tzinfo=UTC)
+    report = evaluate.render_report(results, load_settings(), "abc123def456", when)
+    assert "| Runs of each question | 2 |" in report
+    assert "| Passed every run | 1 of 2 (50%) |" in report
+    assert "| Pass rate | 3 of 4 answers (75%) |" in report
+    assert "| Q01 | easy | metric | 2 of 2 | 1, 1 | $0.0040 |" in report
+    assert "| Q12 | hard | sql | **1 of 2** | 1, 1 | $0.0040 |" in report
+    assert "Failed 1 of 2 runs." in report and "**Run 2:**" in report
+    assert "**Run 1:**" not in report
 
 
 def test_the_committed_results_match_the_pinned_model():
@@ -274,14 +338,31 @@ def test_evaluate_scores_every_question_and_writes_the_report(evaluate_cli, tmp_
     assert code == 0
     assert "Q01  easy   metric        PASS  1 tool calls" in out
     assert "Passed 2 of 2." in out
-    assert "| Passed | 2 of 2 (100%) |" in report.read_text(encoding="utf-8")
+    assert "| Passed every run | 2 of 2 (100%) |" in report.read_text(encoding="utf-8")
     # Each question starts a new conversation.
     assert len(client.requests[2]["messages"]) == 1
     records = [
         json.loads(line)
         for line in (tmp_path / "data" / "logs" / "questions.jsonl").read_text("utf-8").splitlines()
     ]
-    assert [r["tags"] for r in records] == [{"evaluation": "Q01"}, {"evaluation": "Q02"}]
+    assert [r["tags"] for r in records] == [
+        {"evaluation": "Q01", "run": 1},
+        {"evaluation": "Q02", "run": 1},
+    ]
+
+
+def test_evaluate_can_ask_every_question_several_times(evaluate_cli, tmp_path, capsys):
+    report = tmp_path / "results.md"
+    failing = response(text("Which measure? And which period?"))
+    code, client = evaluate_cli(
+        "--runs", "2", "--report", str(report), responses=[*ANSWERS, *ANSWERS[:2], failing]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert len(client.requests) == 6
+    assert "Q02 run 2  n/a    clarify       FAIL" in out
+    assert "Passed every run: 1 of 2 questions. Pass rate: 3 of 4 answers." in out
+    assert "| Q02 | n/a | clarify | **1 of 2** | 0, 0 |" in report.read_text(encoding="utf-8")
 
 
 def test_evaluate_can_run_some_questions_without_rewriting_the_report(evaluate_cli, capsys):
@@ -290,6 +371,22 @@ def test_evaluate_can_run_some_questions_without_rewriting_the_report(evaluate_c
     assert code == 0
     assert "Passed 1 of 1." in out and "the report wasn't rewritten" in out
     assert len(client.requests) == 1
+
+
+def test_a_failure_without_a_report_prints_the_answer(evaluate_cli, capsys):
+    failing = response(text("Which measure do you mean?\n\nAnd which period?"))
+    code, _ = evaluate_cli("--only", "Q02", responses=[failing])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Q02: asked 2 questions instead of exactly one" in out
+    assert "      Which measure do you mean?" in out and "      And which period?" in out
+
+
+def test_evaluate_checks_the_number_of_runs(evaluate_cli, capsys):
+    code, client = evaluate_cli("--runs", "0")
+    assert code == 2
+    assert "--runs must be from 1 to 10" in capsys.readouterr().out
+    assert client.requests == []
 
 
 def test_evaluate_rejects_unknown_question_ids(evaluate_cli, capsys):
@@ -307,5 +404,7 @@ def test_an_api_failure_writes_no_report(evaluate_cli, tmp_path, capsys):
     report = tmp_path / "results.md"
     code, _ = evaluate_cli("--report", str(report), responses=[failure, ANSWERS[2]])
     assert code == 1
-    assert "The Claude API failed on Q01, so no report was written." in capsys.readouterr().out
+    assert "The Claude API failed on Q01 (run 1), so no report was written." in (
+        capsys.readouterr().out
+    )
     assert not report.exists()

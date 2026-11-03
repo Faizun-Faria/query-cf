@@ -54,7 +54,7 @@ Every conversation starts with the [metric catalog](08-metric-catalog.md): 8 met
 
 ### When to ask
 
-- **R-11.** Ask exactly one question, before running anything, when different readings give different answers: a vague measure ("worst", "best", "performing badly"), no period (R-07), or a company name with several matches (R-09). Everything unclear goes into that one question, with the defined options to choose from (Q04).
+- **R-11.** Ask exactly one question, before running anything, when different readings give different answers: a vague measure ("worst", "best", "performing badly"), no period (R-07), or a company name with several matches (R-09). Everything unclear goes into that one question, with the defined options to choose from listed under it, and the reply asks nothing else: no second question, however short (Q04).
 - **R-12.** Don't ask when one reading is clearly meant: a company that "got" complaints received them, and "credit card complaints" means the Credit card group.
 
 ### When the question can't be answered
@@ -79,7 +79,7 @@ Every conversation starts with the [metric catalog](08-metric-catalog.md): 8 met
 - **R-15.** Answer first: one sentence with the figures, then a short table when there are several rows.
 - **R-16.** Every number comes from a tool result. A derived figure, such as a change between years or a share of a total, is computed in the query, not by the model.
 - **R-17.** Counts are exact, with thousands separators (1,234). Rates and shares have one decimal place and a % sign (12.3%).
-- **R-18.** A ranking is listed in order with its values and keeps every row tied at the cut-off, saying so (D-034, Q12). A ranking by count notes that large companies rank high partly through volume (Q10).
+- **R-18.** A ranking is listed in order with its values and keeps every row tied at the cut-off, naming each tied row however many there are, and saying so (D-034, Q12). It never chooses among tied rows by another measure, such as complaint volume. A ranking by count notes that large companies rank high partly through volume (Q10).
 - **R-19.** A ranking by rate leaves out companies or groups with fewer than 100 complaints in the period, unless the question sets its own minimum, and says which minimum it used (D-032).
 - **R-20.** After the figures, say how they were worked out: the metric, the period, every filter and named filter, and the exact company names. An answer from SQL also says why no metric query could answer it.
 - **R-21.** Show every warning the tools return, one line each, keeping its meaning (Q06, Q15, Q22, Q24, Q25).

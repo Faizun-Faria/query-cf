@@ -110,6 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument("--questions", type=Path, default=QUESTIONS)
     evaluate.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="ask every question this many times, since answers vary (default 1)",
+    )
+    evaluate.add_argument(
         "--only",
         action="append",
         default=[],
@@ -416,30 +422,47 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
             print(f"Not in {args.questions.name}: {', '.join(unknown)}")
             return 2
         questions = [q for q in questions if q.id in args.only]
+    if not 1 <= args.runs <= 10:
+        print("--runs must be from 1 to 10")
+        return 2
 
     analyst = start_analyst(args)
     if analyst is None:
         return 1
     settings = analyst.settings
     asking = plural(len(questions), "question")
-    print(f"Asking {asking} with {settings.model} at {settings.effort} effort")
+    times = f", {args.runs} times each" if args.runs > 1 else ""
+    print(f"Asking {asking}{times} with {settings.model} at {settings.effort} effort")
     try:
-        results = evaluate.run(questions, analyst, analyst.toolbox.layer)
+        results = evaluate.run(questions, analyst, analyst.toolbox.layer, runs=args.runs)
     finally:
         analyst.toolbox.conn.close()
 
+    report = args.report or (None if args.only else REPORT)
     passed = sum(r.score.passed for r in results)
     cost = sum(r.answer.cost_usd for r in results)
-    print(f"\nPassed {passed} of {len(results)}. The run cost ${cost:.4f}.")
+    if args.runs == 1:
+        print(f"\nPassed {passed} of {len(results)}. The run cost ${cost:.4f}.")
+    else:
+        grouped = evaluate.by_question(results)
+        steady = sum(all(r.score.passed for r in rs) for rs in grouped.values())
+        print(
+            f"\nPassed every run: {steady} of {len(grouped)} questions. Pass rate: {passed} of "
+            f"{len(results)} answers. The run cost ${cost:.4f}."
+        )
     for r in results:
+        which = f"{r.question.id} run {r.run}" if args.runs > 1 else r.question.id
         if not r.score.passed:
-            print(f"  {r.question.id}: {'; '.join(r.score.misses)}")
+            print(f"  {which}: {'; '.join(r.score.misses)}")
+            if report is None:  # nothing else shows the answer, so show it here
+                print("\n".join(f"      {line}" for line in r.answer.text.splitlines()))
+        if r.score.unsupported:
+            print(f"  {which}: figures no tool returned: {', '.join(r.score.unsupported)}")
 
-    errors = [r.question.id for r in results if r.answer.outcome == "error"]
+    errors = [f"{r.question.id} (run {r.run})" for r in results if r.answer.outcome == "error"]
     if errors:
         print(f"\nThe Claude API failed on {', '.join(errors)}, so no report was written.")
         return 1
-    report = args.report or (None if args.only else REPORT)
     if report is None:
         print(
             "\nOnly some questions ran, so the report wasn't rewritten. Add --report to write one."

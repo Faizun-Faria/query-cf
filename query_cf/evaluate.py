@@ -9,14 +9,17 @@ answer always gets the same score (D-040):
     clarify         no tool was called, and the answer asks exactly one question
     cannot_answer   no tool was called, and the answer offers a metric the expected answer names
 
-Figures must be written the way the rules say (R-17): a rate of 33.25% only matches 33.3%.
-The results report lists every failure with the answer, so a scoring mistake can be seen.
+Figures must be written the way the rules say (R-17): a rate of 33.25% only matches 33.3%;
+a count may also be written in words ("Eighteen"). Separately from the score, every answer
+is checked for figures that no tool returned (R-16), such as a total the model added up
+itself. Each question can be asked several times, because the model's answers vary.
 """
 
 from __future__ import annotations
 
 import calendar
 import csv
+import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -58,6 +61,15 @@ GENERIC_WORDS = {
 # A figure as answers write it: 7,058 or 7058, 33.3% or 33.3 percent.
 FIGURE = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(\s?%|\s?percent\b)?", re.I)
 PERIOD = re.compile(r"(\d{4})(?:-(\d{2}))?")
+# A count written as words, up to ninety-nine: "Eighteen", "twenty-one".
+UNITS = (
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+    "fifteen sixteen seventeen eighteen nineteen"
+).split()
+TENS = "twenty thirty forty fifty sixty seventy eighty ninety".split()
+NUMBER_WORD = re.compile(
+    rf"\b(?:({'|'.join(TENS)})(?:[- ]({'|'.join(UNITS[1:10])}))?|({'|'.join(UNITS)}))\b", re.I
+)
 
 
 class EvaluationError(ValueError):
@@ -101,16 +113,65 @@ def load_questions(path: Path = QUESTIONS_FILE) -> list[Question]:
     return questions
 
 
-# --- What an answer must contain -------------------------------------------------------------
+# --- Reading figures -------------------------------------------------------------------------
 
 
 def _figure_key(number: str, decimals: str | None, percent: str | None) -> str:
     return number.replace(",", "") + (decimals or "") + ("%" if percent else "")
 
 
-def figures_in(text: str) -> set[str]:
-    """Every figure in a text, written without thousands separators: 7058, 33.3%."""
-    return {_figure_key(*match.groups()) for match in FIGURE.finditer(text)}
+def _word_value(match: re.Match) -> str:
+    tens, unit, alone = match.groups()
+    if alone:
+        return str(UNITS.index(alone.lower()))
+    return str(20 + 10 * TENS.index(tens.lower()) + (UNITS.index(unit.lower()) if unit else 0))
+
+
+def figures_in(text: str, words: bool = False) -> set[str]:
+    """Every figure in a text, written without thousands separators: 7058, 33.3%.
+
+    With words, counts written as words up to ninety-nine count too: "Eighteen" is 18.
+    """
+    found = {_figure_key(*match.groups()) for match in FIGURE.finditer(text)}
+    if words:
+        found |= {_word_value(match) for match in NUMBER_WORD.finditer(text)}
+    return found
+
+
+def numbers_in(text: str) -> set[str]:
+    """Every number in a text, without thousands separators or a % sign: 7058, 33.3."""
+    return {key.rstrip("%") for key in figures_in(text)}
+
+
+def _reports_data(match: re.Match) -> bool:
+    """A figure that reports data: a rate, a decimal, or a count of 100 or more.
+
+    Small whole numbers and years are left out: answers use them for dates, ranks and periods.
+    """
+    number, decimals, percent = match.groups()
+    if percent or decimals or "," in number:
+        return True
+    return int(number) >= 100 and not 1900 <= int(number) <= 2100
+
+
+def unsupported_figures(answer, question, known: set[str] = frozenset()) -> list[str]:
+    """Figures in an answer that no tool returned and that the question and prompt don't hold.
+
+    These are usually the model's own arithmetic, such as a total of the rows it was given,
+    which R-16 asks it not to do. `known` holds the numbers in the system prompt.
+    """
+    known = set(known) | numbers_in(question.question)
+    for step in answer.steps:
+        seen = {k: step.get(k) for k in ("input", "result", "error")}
+        known |= numbers_in(json.dumps(seen, ensure_ascii=False, default=str))
+    flagged = []
+    for match in FIGURE.finditer(answer.text):
+        if _reports_data(match) and _figure_key(*match.groups()).rstrip("%") not in known:
+            flagged.append(match.group(0).strip())
+    return list(dict.fromkeys(flagged))
+
+
+# --- What an answer must contain -------------------------------------------------------------
 
 
 def expected_items(question: Question) -> list[tuple[tuple[str, ...], str]]:
@@ -171,36 +232,34 @@ def offered_metrics(question: Question, layer: SemanticLayer) -> list[str]:
 class Score:
     passed: bool
     misses: list[str] = field(default_factory=list)
+    unsupported: list[str] = field(default_factory=list)  # reported, but doesn't fail a question
 
 
-def score(question: Question, answer, layer: SemanticLayer) -> Score:
-    """Score one answer from the analyst (anything with text, outcome and steps)."""
+def _misses(question: Question, answer, layer: SemanticLayer) -> list[str]:
+    """What the answer is missing; empty when it passes."""
     if answer.outcome != "answered":
-        return Score(False, [f"the analyst didn't answer ({answer.outcome}): {answer.text}"])
-    text, steps = answer.text, answer.steps
+        return [f"the analyst didn't answer ({answer.outcome}): {answer.text}"]
+    text, steps, misses = answer.text, answer.steps, []
 
     if question.kind == "clarify":
-        misses = []
         if steps:
             misses.append(f"called {len(steps)} tool(s) before asking")
         asked = text.count("?")
         if asked != 1:
             misses.append(f"asked {asked} questions instead of exactly one")
-        return Score(not misses, misses)
+        return misses
 
     if question.kind == "cannot_answer":
-        misses = []
         if steps:
             misses.append(f"called {len(steps)} tool(s) for a question it can't answer")
         offers = offered_metrics(question, layer)
         if not any(label.lower() in text.lower() for label in offers):
             misses.append(f"offered none of: {', '.join(offers) or 'no metric named'}")
-        return Score(not misses, misses)
+        return misses
 
-    misses = []
     if not any(step.get("ok") for step in steps):
         misses.append("answered without running a query")
-    found = figures_in(text)
+    found = figures_in(text, words=True)
     for labels, value in expected_items(question):
         key = next(iter(figures_in(value)), value)
         name = " / ".join(labels)
@@ -210,10 +269,16 @@ def score(question: Question, answer, layer: SemanticLayer) -> Score:
             patterns = label_patterns(label)
             if patterns and not any(p.search(text) for p in patterns):
                 misses.append(f"missing {label}")
-    return Score(not misses, list(dict.fromkeys(misses)))
+    return list(dict.fromkeys(misses))
 
 
-# --- Running and reporting --------------------------------------------------------------------
+def score(question: Question, answer, layer: SemanticLayer, known: set[str] = frozenset()) -> Score:
+    """Score one answer from the analyst (anything with text, outcome and steps)."""
+    misses = _misses(question, answer, layer)
+    return Score(not misses, misses, unsupported_figures(answer, question, known))
+
+
+# --- Running ---------------------------------------------------------------------------------
 
 
 @dataclass
@@ -221,34 +286,57 @@ class Result:
     question: Question
     answer: object
     score: Score
+    run: int = 1
 
 
-def run(questions: list[Question], analyst, layer: SemanticLayer, progress=print) -> list[Result]:
-    """Ask each question in a new conversation and score the answer."""
+def run(
+    questions: list[Question], analyst, layer: SemanticLayer, runs: int = 1, progress=print
+) -> list[Result]:
+    """Ask each question in a new conversation, `runs` times over, and score every answer."""
+    known = numbers_in(analyst.system_prompt)
     results = []
-    for q in questions:
-        analyst.new_conversation()
-        answer = analyst.ask(q.question, tags={"evaluation": q.id})
-        result = Result(q, answer, score(q, answer, layer))
-        results.append(result)
-        progress(
-            f"{q.id}  {q.difficulty:<6} {q.kind:<13} {'PASS' if result.score.passed else 'FAIL'}"
-            f"  {len(answer.steps)} tool calls  ${answer.cost_usd:.4f}"
-        )
+    for number in range(1, runs + 1):
+        for q in questions:
+            analyst.new_conversation()
+            answer = analyst.ask(q.question, tags={"evaluation": q.id, "run": number})
+            result = Result(q, answer, score(q, answer, layer, known), number)
+            results.append(result)
+            which = f"{q.id} run {number}" if runs > 1 else q.id
+            flagged = len(result.score.unsupported)
+            progress(
+                f"{which}  {q.difficulty:<6} {q.kind:<13} "
+                f"{'PASS' if result.score.passed else 'FAIL'}  {len(answer.steps)} tool calls  "
+                f"${answer.cost_usd:.4f}"
+                + (f"  {flagged} figure(s) no tool returned" if flagged else "")
+            )
     return results
 
 
-def _rate(results: list[Result]) -> str:
-    passed = sum(r.score.passed for r in results)
-    return f"{passed} of {len(results)} ({100 * passed / len(results):.0f}%)"
+# --- Reporting -------------------------------------------------------------------------------
+
+
+def _share(count: int, total: int, unit: str = "") -> str:
+    return f"{count} of {total}{unit} ({100 * count / total:.0f}%)"
 
 
 def _cell(text: str) -> str:
     return " ".join(str(text).split()).replace("|", "\\|")
 
 
+def by_question(results: list[Result]) -> dict[str, list[Result]]:
+    grouped: dict[str, list[Result]] = {}
+    for r in results:
+        grouped.setdefault(r.question.id, []).append(r)
+    return grouped
+
+
 def render_report(results: list[Result], settings, prompt_version: str, when: datetime) -> str:
     """The results report as Markdown, written by `python run_pipeline.py evaluate`."""
+    grouped = by_question(results)
+    runs = max(r.run for r in results)
+    every_run = {qid for qid, rs in grouped.items() if all(r.score.passed for r in rs)}
+    passed = sum(r.score.passed for r in results)
+    flagged = [r for r in results if r.score.unsupported]
     cost = sum(r.answer.cost_usd for r in results)
     seconds = sum(r.answer.seconds for r in results)
     tokens = Counter()
@@ -271,54 +359,87 @@ def render_report(results: list[Result], settings, prompt_version: str, when: da
         f"| Model | `{settings.model}` |",
         f"| Effort | `{settings.effort}` |",
         f"| Prompt version | `{prompt_version}` |",
-        f"| Questions | {len(results)} |",
-        f"| Passed | {_rate(results)} |",
+        f"| Questions | {len(grouped)} |",
+        f"| Runs of each question | {runs} |",
+        f"| Passed every run | {_share(len(every_run), len(grouped))} |",
+        f"| Pass rate | {_share(passed, len(results), ' answers')} |",
+        f"| Answers with figures no tool returned | {_share(len(flagged), len(results))} |",
         f"| Cost of the run | ${cost:.4f} |",
         f"| Cost per 100 questions | ${100 * cost / len(results):.2f} |",
         f"| Tokens | {prompt:,} input ({tokens['cache_read_input_tokens']:,} from the cache), "
         f"{tokens['output_tokens']:,} output |",
-        f"| Mean time per question | {seconds / len(results):.1f} seconds |",
+        f"| Mean time per answer | {seconds / len(results):.1f} seconds |",
     ]
 
     for title, key, order in (
-        ("By difficulty", lambda r: r.question.difficulty, DIFFICULTIES),
-        ("By kind", lambda r: r.question.kind, KINDS),
+        ("By difficulty", lambda q: q.difficulty, DIFFICULTIES),
+        ("By kind", lambda q: q.kind, KINDS),
     ):
-        out += ["", f"## {title}", "", "| Group | Passed |", "| --- | --- |"]
+        out += [
+            "",
+            f"## {title}",
+            "",
+            "| Group | Passed every run | Pass rate |",
+            "| --- | --- | --- |",
+        ]
         for group in order:
-            members = [r for r in results if key(r) == group]
-            if members:
-                out.append(f"| {group} | {_rate(members)} |")
+            ids = [qid for qid, rs in grouped.items() if key(rs[0].question) == group]
+            if ids:
+                answers = [r for qid in ids for r in grouped[qid]]
+                good = sum(r.score.passed for r in answers)
+                out.append(
+                    f"| {group} | {_share(sum(q in every_run for q in ids), len(ids))} "
+                    f"| {_share(good, len(answers))} |"
+                )
 
     out += [
         "",
         "## Every question",
         "",
-        "| Question | Difficulty | Kind | Result | Tool calls | Cost |",
+        "| Question | Difficulty | Kind | Passed | Tool calls | Cost |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
-    for r in results:
-        verdict = "pass" if r.score.passed else "**fail**"
+    for qid, rs in grouped.items():
+        q, good = rs[0].question, sum(r.score.passed for r in rs)
+        verdict = f"{good} of {len(rs)}" if good == len(rs) else f"**{good} of {len(rs)}**"
+        calls = ", ".join(str(len(r.answer.steps)) for r in rs)
         out.append(
-            f"| {r.question.id} | {r.question.difficulty} | {r.question.kind} | {verdict} "
-            f"| {len(r.answer.steps)} | ${r.answer.cost_usd:.4f} |"
+            f"| {qid} | {q.difficulty} | {q.kind} | {verdict} | {calls} "
+            f"| ${sum(r.answer.cost_usd for r in rs):.4f} |"
         )
 
-    failures = [r for r in results if not r.score.passed]
     out += ["", "## Failures", ""]
-    if not failures:
-        out.append("None.")
-    for r in failures:
+    failing = {qid: rs for qid, rs in grouped.items() if qid not in every_run}
+    if not failing:
+        out += ["None.", ""]
+    for qid, rs in failing.items():
+        q = rs[0].question
+        failed = [r for r in rs if not r.score.passed]
         out += [
-            f"### {r.question.id}: {_cell(r.question.question)}",
+            f"### {qid}: {_cell(q.question)}",
             "",
-            f"- **Expected:** {_cell(r.question.expected_answer)}",
-            f"- **What was wrong:** {_cell('; '.join(r.score.misses))}",
-            f"- **Tools called:** {', '.join(s['tool'] for s in r.answer.steps) or 'none'}",
-            "",
-            "Answer:",
-            "",
-            *[f"> {line}" if line else ">" for line in r.answer.text.splitlines()],
-            "",
+            f"Failed {len(failed)} of {len(rs)} runs. **Expected:** {_cell(q.expected_answer)}",
         ]
+        for r in failed:
+            tools = ", ".join(s["tool"] for s in r.answer.steps) or "none"
+            out += [
+                "",
+                f"**Run {r.run}:** {_cell('; '.join(r.score.misses))}. Tools called: {tools}.",
+                "",
+                *[f"> {line}" if line else ">" for line in r.answer.text.splitlines()],
+            ]
+        out.append("")
+
+    out += [
+        "## Figures no tool returned",
+        "",
+        "Figures in an answer that no tool result, the question or the system prompt holds: "
+        "usually the model's own arithmetic, which rule R-16 asks it not to do. They don't fail "
+        "a question.",
+        "",
+    ]
+    if not flagged:
+        out.append("None.")
+    for r in flagged:
+        out.append(f"- {r.question.id}, run {r.run}: {', '.join(r.score.unsupported)}")
     return "\n".join(out).rstrip() + "\n"

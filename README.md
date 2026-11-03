@@ -58,7 +58,7 @@ python run_pipeline.py check-semantic   # run every semantic definition on the w
 python run_pipeline.py check-accounts   # check the Claude API key and MongoDB, at no cost
 python run_pipeline.py ask "How many credit card complaints did Citi receive in 2025?"
 python run_pipeline.py chat             # questions and follow-ups in a row
-python run_pipeline.py evaluate         # score the analyst on evals/questions.csv
+python run_pipeline.py evaluate --runs 3   # score the analyst on evals/questions.csv
 pytest
 ```
 
@@ -120,7 +120,9 @@ The [evaluation design](docs/11-evaluation.md) has the details.
 
 - **Answers computed first.** Each question in `evals/questions.csv` has an expected answer computed in SQL (`evals/answer_key.sql`) before the analyst ever ran.
 - **Scored by code.** Every expected figure and name must be in the answer, from a query that ran; a clarifying question must be exactly one question with no query; a question the data can't answer must run nothing and offer a defined metric instead. The same answer always gets the same score.
-- **Reported by difficulty and kind,** with the measured cost per 100 questions and every failure with its answer.
+- **Asked three times.** The model's answers vary, so the results show which questions passed every run as well as the pass rate over every answer.
+- **Figures checked against their sources.** Any figure in an answer that no tool returned is listed, since the analyst should never do its own arithmetic.
+- **Reported by difficulty and kind,** with the measured cost per 100 questions and every failed answer.
 - **Re-run before any model change.** A test fails if the committed results came from a different model or effort than the one pinned.
 
 ## Project layout
