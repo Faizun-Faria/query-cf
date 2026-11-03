@@ -412,7 +412,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     from query_cf import evaluate
 
     try:
-        questions = evaluate.load_questions(args.questions)
+        questions = bank = evaluate.load_questions(args.questions)
     except evaluate.EvaluationError as exc:
         print(f"Questions error: {exc}")
         return 2
@@ -434,13 +434,13 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     times = f", {args.runs} times each" if args.runs > 1 else ""
     print(f"Asking {asking}{times} with {settings.model} at {settings.effort} effort")
     try:
-        results = evaluate.run(questions, analyst, analyst.toolbox.layer, runs=args.runs)
+        results = evaluate.run(questions, analyst, analyst.toolbox.layer, runs=args.runs, bank=bank)
     finally:
         analyst.toolbox.conn.close()
 
     report = args.report or (None if args.only else REPORT)
     passed = sum(r.score.passed for r in results)
-    cost = sum(r.answer.cost_usd for r in results)
+    cost = sum(a.cost_usd for r in results for a in evaluate.answers(r))
     if args.runs == 1:
         print(f"\nPassed {passed} of {len(results)}. The run cost ${cost:.4f}.")
     else:
@@ -459,7 +459,11 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         if r.score.unsupported:
             print(f"  {which}: figures no tool returned: {', '.join(r.score.unsupported)}")
 
-    errors = [f"{r.question.id} (run {r.run})" for r in results if r.answer.outcome == "error"]
+    errors = [
+        f"{r.question.id} (run {r.run})"
+        for r in results
+        if any(a.outcome == "error" for a in evaluate.answers(r))
+    ]
     if errors:
         print(f"\nThe Claude API failed on {', '.join(errors)}, so no report was written.")
         return 1

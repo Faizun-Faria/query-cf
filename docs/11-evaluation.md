@@ -4,10 +4,12 @@ The evaluation asks the analyst every question in [evals/questions.csv](../evals
 
 ## How a run works
 
-1. `python run_pipeline.py evaluate --runs 3` reads the questions and checks the file: eight columns, unique IDs, a known kind and difficulty, and an expected answer for every question.
+1. `python run_pipeline.py evaluate --runs 3` reads the questions and checks the file: nine columns, unique IDs, a known kind and difficulty, an expected answer for every question, and a `follows` that names a question which isn't a follow-up itself.
 2. Each question is asked three times, each time in a new conversation, so no answer leans on an earlier one (D-042). Each answer is logged like any other question, tagged with its evaluation ID and run number.
 3. Each answer is scored by code (D-040), and checked for figures no tool returned (D-043), as below.
 4. The results go to `docs/12-evaluation-results.md`: how many questions passed every run, the pass rate over all answers, both by difficulty and by kind, the cost and tokens of the run, and every failed answer. If the Claude API fails on any question, no report is written, so a broken run never looks like a bad score.
+
+A follow-up question, such as "And how many did Capital One receive?", names the question it continues in `follows`. That question is asked first, in the same conversation, and isn't scored there; only the follow-up's answer is (D-048).
 
 `--only Q04 --only Q11` re-runs some questions without rewriting the report and prints each failed answer, which is useful after changing a rule.
 
@@ -19,11 +21,13 @@ The model doesn't give the same answer every time. In the second run of the firs
 
 | Kind | Passes when |
 | --- | --- |
-| `metric`, `sql` | Every expected figure is in the answer, every expected name or period is too, and at least one query ran |
-| `clarify` | No tool was called, and the answer asks exactly one question, or makes one request without a question mark, such as "Please reply with one choice from each list" (US-09, D-045) |
-| `cannot_answer` | No tool was called, and the answer offers a metric the expected answer names, such as the monetary relief rate (US-08) |
+| `metric`, `sql` | Every expected figure is in the answer and in a tool result, every expected name or period is in the answer too, and at least one query ran |
+| `clarify` | No query ran, though looking up names with `list_values` may have, and the answer asks exactly one question, or makes one request without a question mark, such as "Please reply with one choice from each list" (US-09, D-045, D-049) |
+| `cannot_answer` | No tool was called, and the answer offers a metric the expected answer names, by its label, its name or its name with spaces, such as the monetary relief rate or `narrative_share` (US-08, D-050) |
 
-Figures are matched as written by the rules (R-17): 7,058 or 7058, and 33.3%, 33.3 % or 33.3 percent, but not 33.25% or "about 7,000". A count up to ninety-nine may also be written as words, such as "Eighteen". Periods are matched as years, or as 2026-01, January 2026 or Jan 2026, or as the month name alone when the year appears anywhere in the answer, as in a table headed "Month (2026)" (D-046). Names are matched on their first distinctive word, so "TransUnion" counts for TRANSUNION INTERMEDIATE HOLDINGS, INC. and "Bank of America" for BANK OF AMERICA, NATIONAL ASSOCIATION; words such as "bank" and "financial", which many companies share, are skipped. Because every tied company has its own label, a ranking that leaves out companies tied at the cut-off fails (R-18).
+Figures are matched as written by the rules (R-17): 7,058 or 7058, and 33.3%, 33.3 % or 33.3 percent, but not 33.25% or "about 7,000". A count up to ninety-nine may also be written as words, such as "Eighteen". Periods are matched as years; months as 2026-01, January 2026 or Jan 2026; quarters as 2025-Q1, Q1 2025 or the first quarter of 2025; and a month or quarter without its year when the year appears anywhere in the answer, as in a table headed "Month (2026)" (D-046). States are matched as their postal code or their name. Names are matched on their first distinctive word, so "TransUnion" counts for TRANSUNION INTERMEDIATE HOLDINGS, INC. and "Bank of America" for BANK OF AMERICA, NATIONAL ASSOCIATION; words such as "bank" and "financial", which many companies share, are skipped. Because every tied company has its own label, a ranking that leaves out companies tied at the cut-off fails (R-18).
+
+An expected figure must also be in a tool result, at the precision the answer writes it: 18.4% passes when a query returned 18.4012. An answer that gets 18.4% right by working it out from other figures fails, because rule R-16 says derived figures come from a query (D-047). The questions that ask for a change, a share or a difference test this.
 
 ## Figures no tool returned
 
@@ -43,13 +47,16 @@ An AI judge could score wording, but its scores would vary from run to run and w
 
 The run needs the full warehouse and an API key, so it runs on a laptop, not in CI; CI runs the tests of the scoring itself (D-041).
 
-The rules have been adjusted once after seeing these results (D-044), so the first 25 questions have helped shape the analyst. The next 25 questions are the fairer test: they should be written and scored before the rules change again.
+The rules have been adjusted once after seeing these results (D-044), so the first 25 questions have helped shape the analyst. Questions Q26 to Q50 were written after that change, aimed at the rules the first 25 didn't test, so their first scores are the fairer test of the analyst.
 
 ## Tests
 
-- The real question bank loads, and a perfect answer to each of the 25 questions passes.
+- The real question bank loads, and a perfect answer to each of the 50 questions passes.
 - Figures, periods and names are matched however they are written, counts written as words included, but a figure with the wrong number of decimal places, a missing row, a missing tied company or a figure with no query behind it fails.
-- Clarifying and cannot-answer replies fail if they run a query, ask two questions, ask nothing or offer no defined metric; a request worded without a question mark passes.
+- Clarifying and cannot-answer replies fail if they run a query, ask two questions, ask nothing or offer no defined metric; a request worded without a question mark passes, and so does a clarifying question after a name lookup.
+- A follow-up names a question that exists and isn't a follow-up itself.
+- An expected figure that no tool returned fails, even when it is right; one a tool returned with more decimal places passes.
+- Quarters and states are matched however they are written, and "or" is never read as Oregon.
 - A figure no tool returned is flagged without failing the answer; figures from the tool results, the question and the prompt, and dates and ranks, are never flagged.
 - The report counts repeated runs per question, by difficulty and by kind.
-- The evaluate command runs against the planted warehouse with a fake model: it scores each question in its own conversation, tags the log with the question and run, asks every question several times, prints failed answers when no report is written, re-runs single questions without rewriting the report, and writes no report when the API fails.
+- The evaluate command runs against the planted warehouse with a fake model: it scores each question in its own conversation, tags the log with the question and run, asks every question several times, asks a follow-up straight after the question it follows, prints failed answers when no report is written, re-runs single questions without rewriting the report, and writes no report when the API fails.

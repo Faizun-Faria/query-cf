@@ -107,15 +107,20 @@ Every conversation starts with the [metric catalog](08-metric-catalog.md): 8 met
 
 | Rules | Questions |
 | --- | --- |
-| R-01: metric queries first, in several steps when needed | Q01, Q09 |
-| R-02, R-03: guarded SQL that follows the definitions | Q03, Q12 |
+| R-01: metric queries first, in several steps when needed | Q01, Q09, Q49 |
+| R-02, R-03: guarded SQL that follows the definitions | Q03, Q12, Q37, Q38 |
+| R-06: relative periods, counted back from 31 August 2026 | Q26, Q27, Q28 |
+| R-07, R-12: a missing period, and a period given in words | Q29, Q30, Q31 |
 | R-08: product groups across renames, and sub-products | Q07, Q08, Q21 |
-| R-09: short company names | Q01, Q13, Q24 |
-| R-10: plain words for metrics and values | Q14, Q15, Q16, Q17, Q18, Q19, Q20 |
-| R-11: one clarifying question | Q04 |
-| R-13: questions that can't be answered | Q05, Q11 |
-| R-14: questions outside the MVP scope | Q06, Q07, Q21, Q24 |
-| R-18: ties and rankings by count | Q10, Q12 |
-| R-21: warnings | Q06, Q15, Q22, Q24, Q25 |
+| R-09: short company names, and names outside the list | Q01, Q13, Q24, Q32, Q33 |
+| R-10: plain words for metrics and values | Q14, Q15, Q16, Q17, Q18, Q19, Q20, Q45 |
+| R-11: one clarifying question | Q04, Q29, Q30, Q33, Q50 |
+| R-13: questions that can't be answered | Q05, Q11, Q42, Q43 |
+| R-14: questions outside the MVP scope | Q06, Q07, Q21, Q24, Q31, Q32, Q46, Q48 |
+| R-16: derived figures computed in a query | Q34, Q35, Q36 |
+| R-18: ties and rankings by count | Q10, Q12, Q44 |
+| R-19: the default minimum for rate rankings | Q37, Q38 |
+| R-21: warnings | Q06, Q15, Q22, Q24, Q25, Q46 |
+| R-24: follow-up questions | Q39, Q40, Q41 |
 
-Not tested yet: relative periods (R-06), a missing period (R-07), a company name outside the list (R-09), derived figures (R-16), the default minimum for rate rankings (R-19) and follow-ups (R-24). These are the first candidates for the next 25 questions (US-12).
+Every rule is now tested by at least one question. The rules about wording (R-15, R-17, R-20, R-22, R-23) aren't scored, as the [evaluation design](11-evaluation.md) explains; the question log keeps what's needed to check them.

@@ -26,25 +26,31 @@ QUESTIONS = {q.id: q for q in load_questions()}
 RAN_A_QUERY = [{"tool": "query_metrics", "ok": True}]
 
 
-def answer(words, steps=RAN_A_QUERY, outcome="answered"):
-    return SimpleNamespace(text=words, steps=steps, outcome=outcome)
+def returned(words):
+    """A query whose result holds the same figures as the answer, as the real tools return them."""
+    return [{"tool": "query_metrics", "ok": True, "result": {"rows": [[words]]}}]
 
 
-def misses(question_id, words, steps=RAN_A_QUERY, outcome="answered"):
+def answer(words, steps=None, outcome="answered"):
+    return SimpleNamespace(
+        text=words, steps=returned(words) if steps is None else steps, outcome=outcome
+    )
+
+
+def misses(question_id, words, steps=None, outcome="answered"):
     return score(QUESTIONS[question_id], answer(words, steps, outcome), LAYER).misses
+
+
+def question(expected, kind="metric", follows=""):
+    return evaluate.Question("Q99", "ops_lead", "easy", kind, "Q?", expected, "", "", follows)
 
 
 # --- The question bank ------------------------------------------------------------------------
 
 
 def test_the_question_bank_loads_with_an_answer_for_every_question():
-    assert len(QUESTIONS) == 25
-    assert Counter(q.kind for q in QUESTIONS.values()) == {
-        "metric": 20,
-        "sql": 2,
-        "clarify": 1,
-        "cannot_answer": 2,
-    }
+    assert len(QUESTIONS) >= 25
+    assert set(Counter(q.kind for q in QUESTIONS.values())) == set(evaluate.KINDS)
     for q in QUESTIONS.values():
         if q.kind in ("metric", "sql"):
             assert all(evaluate.figures_in(value) for _, value in evaluate.expected_items(q)), q.id
@@ -64,22 +70,25 @@ def test_a_perfect_answer_to_every_question_passes():
             words = "Do you mean the most complaints, or the lowest timely response rate?"
         else:
             words = f"The data can't say. I can give the {evaluate.offered_metrics(q, LAYER)[0]}."
-        steps = RAN_A_QUERY if q.kind in ("metric", "sql") else []
+        steps = None if q.kind in ("metric", "sql") else []
         assert score(q, answer(words, steps), LAYER).passed, q.id
 
 
 @pytest.mark.parametrize(
     "header_or_row",
     [
-        "id,persona,difficulty,kind,question,expected_answer,notes",
-        "Q01,ops_lead,easy,metric,How many?,7,how,notes",
-        "Q02,ops_lead,easy,guess,How many?,7,how,notes",
-        "Q02,ops_lead,trivial,metric,How many?,7,how,notes",
-        "Q02,ops_lead,easy,metric,How many?,,how,notes",
+        "id,persona,difficulty,kind,question,expected_answer,how_computed,notes",
+        "Q01,ops_lead,easy,metric,How many?,7,how,notes,",
+        "Q02,ops_lead,easy,guess,How many?,7,how,notes,",
+        "Q02,ops_lead,trivial,metric,How many?,7,how,notes,",
+        "Q02,ops_lead,easy,metric,How many?,,how,notes,",
+        "Q02,ops_lead,easy,metric,How many?,7,how,notes",
+        "Q02,ops_lead,easy,metric,And Citi?,7,how,notes,Q09",
+        "Q02,ops_lead,easy,metric,And Citi?,7,how,notes,Q02",
     ],
 )
 def test_the_questions_file_is_checked(tmp_path, header_or_row):
-    good = "Q01,ops_lead,easy,metric,How many?,7,how,notes"
+    good = "Q01,ops_lead,easy,metric,How many?,7,how,notes,"
     header = ",".join(evaluate.COLUMNS)
     lines = (
         [header_or_row, good] if header_or_row.startswith("id,") else [header, good, header_or_row]
@@ -87,6 +96,21 @@ def test_the_questions_file_is_checked(tmp_path, header_or_row):
     path = tmp_path / "questions.csv"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(EvaluationError):
+        load_questions(path)
+
+
+def test_a_follow_up_names_a_question_that_isnt_one_itself(tmp_path):
+    header = ",".join(evaluate.COLUMNS)
+    rows = [
+        "Q01,ops_lead,easy,metric,How many?,7,how,notes,",
+        "Q02,ops_lead,easy,metric,And Citi?,8,how,notes,Q01",
+    ]
+    path = tmp_path / "questions.csv"
+    path.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
+    assert [q.follows for q in load_questions(path)] == ["", "Q01"]
+    chained = rows + ["Q03,ops_lead,easy,metric,And Chase?,9,how,notes,Q02"]
+    path.write_text("\n".join([header, *chained]) + "\n", encoding="utf-8")
+    with pytest.raises(EvaluationError, match="a follow-up too"):
         load_questions(path)
 
 
@@ -184,6 +208,31 @@ def test_a_figure_without_a_query_behind_it_fails():
     assert misses("Q01", "7,058", steps=blocked) == ["answered without running a query"]
 
 
+def test_an_expected_figure_must_come_from_a_tool_result():
+    worked_out = [{"tool": "query_metrics", "ok": True, "result": {"rows": [["2024", "7,000"]]}}]
+    assert misses("Q01", "Capital One received 7,058.", steps=worked_out) == [
+        "7,058 isn't in any tool result, so it was worked out outside a query"
+    ]
+    # A tool may return more decimal places than the answer writes.
+    unrounded = [{"tool": "run_sql", "ok": True, "result": {"rows": [["13.2523300510768"]]}}]
+    assert misses("Q14", "13.3% of closed complaints got money back.", steps=unrounded) == []
+
+
+@pytest.mark.parametrize(
+    ("expected", "words", "missing"),
+    [
+        ("2025-Q1=1,234; 2025-Q2=2,345", "Q1 2025: 1,234; the second quarter of 2025: 2,345", []),
+        ("2025-Q1=1,234; 2025-Q2=2,345", "| Quarter (2025) |\n| Q1 | 1,234 |\n| Q2 | 2,345 |", []),
+        ("2025-Q1=1,234; 2025-Q2=2,345", "Q1: 1,234 and Q2: 2,345", ["2025-Q1", "2025-Q2"]),
+        ("CA=10,000; TX=9,000", "California had 10,000 and TX 9,000.", []),
+        ("OR=500", "There were 500 complaints, or so.", ["OR"]),
+    ],
+)
+def test_quarters_and_states_count_however_they_are_written(expected, words, missing):
+    verdict = score(question(expected), answer(words), LAYER)
+    assert verdict.misses == [f"missing {label}" for label in missing]
+
+
 def test_an_answer_that_never_came_fails():
     [reason] = misses("Q01", "The Claude API returned an error", outcome="error")
     assert reason.startswith("the analyst didn't answer (error)")
@@ -197,7 +246,18 @@ def test_a_clarifying_answer_asks_exactly_one_question_and_runs_nothing():
     assert misses("Q04", one, steps=[]) == []
     two = "Which measure do you mean? And for which period?"
     assert misses("Q04", two, steps=[]) == ["asked 2 questions instead of exactly one"]
-    assert misses("Q04", one) == ["called 1 tool(s) before asking"]
+    assert misses("Q04", one) == ["ran 1 query before asking"]
+
+
+def test_a_clarifying_question_may_follow_a_name_lookup():
+    # As the analyst answered Q33: it looked up "Citizens", found five companies and asked.
+    lookup = [{"tool": "list_values", "ok": True, "result": {"values": ["5 companies"]}}]
+    asked = (
+        'Several companies match "Citizens", so I need to know which one. Which one should I use?'
+    )
+    assert misses("Q33", asked, steps=lookup) == []
+    counted = [*lookup, {"tool": "query_metrics", "ok": True, "result": {"rows": [["132"]]}}]
+    assert misses("Q33", asked, steps=counted) == ["ran 1 query before asking"]
 
 
 def test_a_clarifying_request_without_a_question_mark_counts_as_the_question():
@@ -222,11 +282,27 @@ def test_a_cannot_answer_reply_offers_a_defined_metric_and_runs_nothing():
     assert misses("Q11", "No resolution dates; the timely response rate is close.", steps=[]) == []
 
 
+@pytest.mark.parametrize(
+    "offer",
+    [
+        # As the analyst answered Q42, naming the metric rather than its label.
+        "I can't read narratives. One thing recorded is the share that had a narrative "
+        "published (`narrative_share`).",
+        "I can give the narrative share for those complaints instead.",
+        "I can give the share with narrative instead.",
+    ],
+)
+def test_an_offer_may_name_the_metric_by_its_label_or_its_name(offer):
+    assert misses("Q42", offer, steps=[]) == []
+
+
 # --- Counts written as words, and figures no tool returned ---------------------------------------
 
 
 def test_counts_written_as_words_count_as_figures():
-    assert misses("Q03", "Eighteen companies received at least 1,000 complaints.") == []
+    listed = [{"tool": "run_sql", "ok": True, "result": {"rows_returned": 18}}]
+    words = "Eighteen companies received at least 1,000 complaints."
+    assert misses("Q03", words, steps=listed) == []
     assert evaluate.figures_in("twenty-one, Ninety nine and zero", words=True) >= {"21", "99", "0"}
     assert "18" not in evaluate.figures_in("Eighteen companies")  # only when asked for words
 
@@ -255,10 +331,9 @@ def test_figures_no_tool_returned_are_flagged_without_failing_the_answer():
 
 def test_dates_ranks_and_figures_from_the_question_are_never_flagged():
     words = "From 1 January to 31 December 2025, 18 companies had at least 1,000 complaints."
-    assert evaluate.unsupported_figures(answer(words), QUESTIONS["Q03"]) == []
-    assert evaluate.unsupported_figures(answer("A total of 256,962."), QUESTIONS["Q02"]) == [
-        "256,962"
-    ]
+    assert evaluate.unsupported_figures(answer(words, steps=[]), QUESTIONS["Q03"]) == []
+    total = answer("A total of 256,962.", steps=[])
+    assert evaluate.unsupported_figures(total, QUESTIONS["Q02"]) == ["256,962"]
 
 
 # --- The report -----------------------------------------------------------------------------------
@@ -343,10 +418,11 @@ def evaluate_cli(warehouse, tmp_path, monkeypatch):  # noqa: F811
         writer = csv.writer(f, lineterminator="\n")
         writer.writerow(evaluate.COLUMNS)
         writer.writerow(
-            ["Q01", "ops_lead", "easy", "metric", "Wells Fargo complaints, ever?", "3", "", ""]
+            ["Q01", "ops_lead", "easy", "metric", "Wells Fargo complaints, ever?", "3", "", "", ""]
         )
         writer.writerow(
-            ["Q02", "ops_lead", "n/a", "clarify", "Which bank is worst?", "CLARIFY: asks", "", ""]
+            ["Q02", "ops_lead", "n/a", "clarify", "Which bank is worst?", "CLARIFY: asks"]
+            + ["", "", ""]
         )
 
     def run(*args, responses=()):
@@ -428,6 +504,46 @@ def test_evaluate_rejects_unknown_question_ids(evaluate_cli, capsys):
     assert code == 2
     assert "Not in questions.csv: Q99" in capsys.readouterr().out
     assert client.requests == []
+
+
+def test_a_follow_up_is_asked_after_the_question_it_follows(evaluate_cli, tmp_path, capsys):
+    questions = tmp_path / "with_follow_up.csv"
+    with open(questions, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f, lineterminator="\n")
+        writer.writerow(evaluate.COLUMNS)
+        writer.writerow(
+            ["Q01", "ops_lead", "easy", "metric", "Wells Fargo complaints, ever?", "3", "", "", ""]
+        )
+        writer.writerow(["Q05", "ops_lead", "easy", "metric", "And Bank A?", "4", "", "", "Q01"])
+    bank_a = {
+        "metrics": ["complaints"],
+        "filters": [{"dimension": "company", "values": ["Bank A"]}],
+    }
+    code, client = evaluate_cli(
+        "--questions",
+        str(questions),
+        "--only",
+        "Q05",
+        responses=[
+            *ANSWERS[:2],
+            response(tool_call("query_metrics", bank_a), stop="tool_use"),
+            response(text("Bank A received 4 complaints.")),
+        ],
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Q05 (after Q01)  easy   metric        PASS" in out
+    follow_up = client.requests[2]["messages"]
+    assert follow_up[0] == {"role": "user", "content": "Wells Fargo complaints, ever?"}
+    assert follow_up[-1] == {"role": "user", "content": "And Bank A?"}
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "data" / "logs" / "questions.jsonl").read_text("utf-8").splitlines()
+    ]
+    assert [r["tags"] for r in records] == [
+        {"evaluation": "Q05", "run": 1, "setup": "Q01"},
+        {"evaluation": "Q05", "run": 1},
+    ]
 
 
 def test_an_api_failure_writes_no_report(evaluate_cli, tmp_path, capsys):

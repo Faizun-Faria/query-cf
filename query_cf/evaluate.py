@@ -6,8 +6,8 @@ answer always gets the same score (D-040):
     metric, sql     every expected figure appears in the answer (7,058; 33.3%), every expected
                     name or period appears too (matched on its first long word, so "TransUnion"
                     counts for TRANSUNION INTERMEDIATE HOLDINGS, INC.), and at least one query ran
-    clarify         no tool was called, and the answer asks exactly one question, or makes one
-                    request without a question mark ("Please reply with one choice from each list")
+    clarify         no query ran (a name lookup may), and the answer asks exactly one question, or
+                    makes one request without a question mark ("Please reply with one choice ...")
     cannot_answer   no tool was called, and the answer offers a metric the expected answer names
 
 Figures must be written the way the rules say (R-17): a rate of 33.25% only matches 33.3%;
@@ -41,8 +41,11 @@ COLUMNS = (
     "expected_answer",
     "how_computed",
     "notes",
+    "follows",  # a follow-up's question ID: asked straight after that one, in one conversation
 )
 KINDS = ("metric", "sql", "clarify", "cannot_answer")
+STATES_FILE = ROOT / "warehouse" / "seeds" / "us_state_codes.csv"
+ORDINALS = ("first", "second", "third", "fourth")
 DIFFICULTIES = ("easy", "medium", "hard", "n/a")
 RANKING_WORDS = {"highest", "lowest"}
 # Words in many company names, which say nothing about which company an answer names.
@@ -61,7 +64,7 @@ GENERIC_WORDS = {
 
 # A figure as answers write it: 7,058 or 7058, 33.3% or 33.3 percent.
 FIGURE = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(\s?%|\s?percent\b)?", re.I)
-PERIOD = re.compile(r"(\d{4})(?:-(\d{2}))?")
+PERIOD = re.compile(r"(\d{4})(?:-(\d{2})|-Q([1-4]))?")
 # A count written as words, up to ninety-nine: "Eighteen", "twenty-one".
 UNITS = (
     "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
@@ -82,6 +85,14 @@ class EvaluationError(ValueError):
     """The questions file can't be used; the message names the row."""
 
 
+def _state_names() -> dict[str, str]:
+    with open(STATES_FILE, encoding="utf-8", newline="") as f:
+        return {row["state_code"]: row["state_name"] for row in csv.DictReader(f)}
+
+
+STATES = _state_names()
+
+
 @dataclass(frozen=True)
 class Question:
     id: str
@@ -92,6 +103,7 @@ class Question:
     expected_answer: str
     how_computed: str
     notes: str
+    follows: str = ""
 
 
 def load_questions(path: Path = QUESTIONS_FILE) -> list[Question]:
@@ -116,6 +128,14 @@ def load_questions(path: Path = QUESTIONS_FILE) -> list[Question]:
             raise EvaluationError(f"{path}: {q.id} has no expected_answer")
         seen.add(q.id)
         questions.append(q)
+    by_id = {q.id: q for q in questions}
+    for q in questions:
+        if not q.follows:
+            continue
+        if q.follows not in by_id or q.follows == q.id:
+            raise EvaluationError(f"{path}: {q.id} follows {q.follows}, which isn't a question")
+        if by_id[q.follows].follows:
+            raise EvaluationError(f"{path}: {q.id} follows {q.follows}, which is a follow-up too")
     return questions
 
 
@@ -160,21 +180,44 @@ def _reports_data(match: re.Match) -> bool:
     return int(number) >= 100 and not 1900 <= int(number) <= 2100
 
 
-def unsupported_figures(answer, question, known: set[str] = frozenset()) -> list[str]:
+def _step_text(steps: list[dict], keys=("input", "result", "error")) -> str:
+    return json.dumps(
+        [{k: step.get(k) for k in keys} for step in steps], ensure_ascii=False, default=str
+    )
+
+
+def unsupported_figures(
+    answer, question, known: set[str] = frozenset(), setup: Setup | None = None
+) -> list[str]:
     """Figures in an answer that no tool returned and that the question and prompt don't hold.
 
     These are usually the model's own arithmetic, such as a total of the rows it was given,
-    which R-16 asks it not to do. `known` holds the numbers in the system prompt.
+    which R-16 asks it not to do. `known` holds the numbers in the system prompt; a follow-up
+    may also repeat what its `setup`, the question it follows, was told.
     """
-    known = set(known) | numbers_in(question.question)
-    for step in answer.steps:
-        seen = {k: step.get(k) for k in ("input", "result", "error")}
-        known |= numbers_in(json.dumps(seen, ensure_ascii=False, default=str))
+    known = set(known) | numbers_in(question.question) | numbers_in(_step_text(answer.steps))
+    if setup is not None:
+        known |= numbers_in(setup.question.question) | numbers_in(_step_text(setup.answer.steps))
     flagged = []
     for match in FIGURE.finditer(answer.text):
         if _reports_data(match) and _figure_key(*match.groups()).rstrip("%") not in known:
             flagged.append(match.group(0).strip())
     return list(dict.fromkeys(flagged))
+
+
+def _tool_numbers(steps: list[dict]) -> list[float]:
+    return [float(n) for n in numbers_in(_step_text(steps, keys=("result",)))]
+
+
+def _returned(key: str, returned: list[float]) -> bool:
+    """Whether a tool returned this figure, at the precision the answer writes it (R-16).
+
+    A tool may return 18.4012 where the answer writes 18.4%, which counts; an answer that
+    writes 18.4% when no tool returned anything that rounds to it worked the figure out itself.
+    """
+    number = key.rstrip("%")
+    decimals = len(number.partition(".")[2])
+    return any(f"{value:.{decimals}f}" == number for value in returned)
 
 
 # --- What an answer must contain -------------------------------------------------------------
@@ -198,24 +241,42 @@ def expected_items(question: Question) -> list[tuple[tuple[str, ...], str]]:
 def label_patterns(label: str, answer: str = "") -> list[re.Pattern] | None:
     """Ways an answer may write a label, or None for words that need no check.
 
-    A year must appear as written; a month as 2026-01, January 2026 or Jan 2026, or as the
-    month name alone when the year appears anywhere in the answer, as under a "Month (2026)"
-    heading; a name by its first word of four or more letters that isn't a generic word such
-    as "bank", as a whole word in any case ("TD BANK US HOLDING COMPANY" has none, so "TD").
+    A year must appear as written; a month as 2026-01, January 2026 or Jan 2026, and a
+    quarter as 2025-Q1, Q1 2025 or the first quarter of 2025, or either one without its year
+    when the year appears anywhere in the answer, as under a "Month (2026)" heading; a state
+    as its postal code or its name; a name by its first word of four or more letters that
+    isn't a generic word such as "bank", as a whole word in any case ("TD BANK US HOLDING
+    COMPANY" has none, so "TD").
     """
     if label.lower() in RANKING_WORDS:
         return None
     period = PERIOD.fullmatch(label)
     if period:
-        year, month = period.groups()
-        if not month:
-            return [re.compile(rf"\b{year}\b")]
-        names = (calendar.month_name[int(month)], calendar.month_abbr[int(month)])
-        patterns = [re.compile(rf"\b{year}-{month}\b")]
-        patterns += [re.compile(rf"\b{name}\.?\s+{year}\b", re.I) for name in names]
-        if re.search(rf"\b{year}\b", answer):
-            patterns += [re.compile(rf"\b{name}\b", re.I) for name in names]
-        return patterns
+        year, month, quarter = period.groups()
+        year_given = bool(re.search(rf"\b{year}\b", answer))
+        if month:
+            names = (calendar.month_name[int(month)], calendar.month_abbr[int(month)])
+            patterns = [re.compile(rf"\b{year}-{month}\b")]
+            patterns += [re.compile(rf"\b{name}\.?\s+{year}\b", re.I) for name in names]
+            if year_given:
+                patterns += [re.compile(rf"\b{name}\b", re.I) for name in names]
+            return patterns
+        if quarter:
+            ordinal = ORDINALS[int(quarter) - 1]
+            patterns = [
+                re.compile(rf"\b{year}-Q{quarter}\b", re.I),
+                re.compile(rf"\bQ{quarter}\s+{year}\b", re.I),
+                re.compile(rf"\b{ordinal}\s+quarter\s+(?:of\s+)?{year}\b", re.I),
+            ]
+            if year_given:
+                patterns += [
+                    re.compile(rf"\bQ{quarter}\b", re.I),
+                    re.compile(rf"\b{ordinal}\s+quarter\b", re.I),
+                ]
+            return patterns
+        return [re.compile(rf"\b{year}\b")]
+    if label in STATES:
+        return [re.compile(rf"\b{label}\b"), re.compile(rf"\b{STATES[label]}\b", re.I)]
     words = [w.strip(".,&()'\"") for w in label.split()]
     distinctive = (
         w for w in words if sum(c.isalpha() for c in w) >= 4 and w.lower() not in GENERIC_WORDS
@@ -251,8 +312,12 @@ def _misses(question: Question, answer, layer: SemanticLayer) -> list[str]:
     text, steps, misses = answer.text, answer.steps, []
 
     if question.kind == "clarify":
-        if steps:
-            misses.append(f"called {len(steps)} tool(s) before asking")
+        # Looking up names is allowed: R-09 needs it to know that a name has several matches.
+        queries = [step for step in steps if step.get("tool") != "list_values"]
+        if queries:
+            misses.append(
+                f"ran {len(queries)} {'query' if len(queries) == 1 else 'queries'} before asking"
+            )
         asked = text.count("?")
         if asked > 1:
             misses.append(f"asked {asked} questions instead of exactly one")
@@ -264,18 +329,28 @@ def _misses(question: Question, answer, layer: SemanticLayer) -> list[str]:
         if steps:
             misses.append(f"called {len(steps)} tool(s) for a question it can't answer")
         offers = offered_metrics(question, layer)
-        if not any(label.lower() in text.lower() for label in offers):
+        # An offer may name a metric by its label, its name or its name with spaces:
+        # "Share with narrative", narrative_share or "narrative share".
+        names = {m.label: m.name for m in layer.metrics.values()}
+        forms = [
+            f for label in offers for f in (label, names[label], names[label].replace("_", " "))
+        ]
+        if not any(form.lower() in text.lower() for form in forms):
             misses.append(f"offered none of: {', '.join(offers) or 'no metric named'}")
         return misses
 
-    if not any(step.get("ok") for step in steps):
+    ran = [step for step in steps if step.get("ok")]
+    if not ran:
         misses.append("answered without running a query")
     found = figures_in(text, words=True)
+    returned = _tool_numbers(ran)
     for labels, value in expected_items(question):
         key = next(iter(figures_in(value)), value)
         name = " / ".join(labels)
         if key not in found:
             misses.append(f"missing {value}" + (f" for {name}" if name else ""))
+        elif ran and not _returned(key, returned):
+            misses.append(f"{value} isn't in any tool result, so it was worked out outside a query")
         for label in labels:
             patterns = label_patterns(label, text)
             if patterns and not any(p.search(text) for p in patterns):
@@ -283,13 +358,27 @@ def _misses(question: Question, answer, layer: SemanticLayer) -> list[str]:
     return list(dict.fromkeys(misses))
 
 
-def score(question: Question, answer, layer: SemanticLayer, known: set[str] = frozenset()) -> Score:
+def score(
+    question: Question,
+    answer,
+    layer: SemanticLayer,
+    known: set[str] = frozenset(),
+    setup: Setup | None = None,
+) -> Score:
     """Score one answer from the analyst (anything with text, outcome and steps)."""
     misses = _misses(question, answer, layer)
-    return Score(not misses, misses, unsupported_figures(answer, question, known))
+    return Score(not misses, misses, unsupported_figures(answer, question, known, setup))
 
 
 # --- Running ---------------------------------------------------------------------------------
+
+
+@dataclass
+class Setup:
+    """The question a follow-up continues, asked first in the same conversation; not scored."""
+
+    question: Question
+    answer: object
 
 
 @dataclass
@@ -298,21 +387,44 @@ class Result:
     answer: object
     score: Score
     run: int = 1
+    setup: Setup | None = None
+
+
+def answers(result: Result) -> list:
+    """Every answer a result cost: a follow-up's setup answer as well as its own."""
+    return [result.setup.answer, result.answer] if result.setup else [result.answer]
 
 
 def run(
-    questions: list[Question], analyst, layer: SemanticLayer, runs: int = 1, progress=print
+    questions: list[Question],
+    analyst,
+    layer: SemanticLayer,
+    runs: int = 1,
+    progress=print,
+    bank: list[Question] | None = None,
 ) -> list[Result]:
-    """Ask each question in a new conversation, `runs` times over, and score every answer."""
+    """Ask each question in a new conversation, `runs` times over, and score every answer.
+
+    A follow-up is asked straight after the question it follows, which comes from `bank`
+    (every question in the file) and is asked again, unscored, so the follow-up has its context.
+    """
     known = numbers_in(analyst.system_prompt)
+    by_id = {q.id: q for q in (bank or questions)}
     results = []
     for number in range(1, runs + 1):
         for q in questions:
             analyst.new_conversation()
-            answer = analyst.ask(q.question, tags={"evaluation": q.id, "run": number})
-            result = Result(q, answer, score(q, answer, layer, known), number)
+            tags = {"evaluation": q.id, "run": number}
+            setup = None
+            if q.follows:
+                first = by_id[q.follows]
+                setup = Setup(first, analyst.ask(first.question, tags={**tags, "setup": first.id}))
+            answer = analyst.ask(q.question, tags=tags)
+            result = Result(q, answer, score(q, answer, layer, known, setup), number, setup)
             results.append(result)
             which = f"{q.id} run {number}" if runs > 1 else q.id
+            if q.follows:
+                which += f" (after {q.follows})"
             flagged = len(result.score.unsupported)
             progress(
                 f"{which}  {q.difficulty:<6} {q.kind:<13} "
@@ -348,11 +460,12 @@ def render_report(results: list[Result], settings, prompt_version: str, when: da
     every_run = {qid for qid, rs in grouped.items() if all(r.score.passed for r in rs)}
     passed = sum(r.score.passed for r in results)
     flagged = [r for r in results if r.score.unsupported]
-    cost = sum(r.answer.cost_usd for r in results)
-    seconds = sum(r.answer.seconds for r in results)
+    every_answer = [a for r in results for a in answers(r)]
+    cost = sum(a.cost_usd for a in every_answer)
+    seconds = sum(a.seconds for a in every_answer)
     tokens = Counter()
-    for r in results:
-        tokens.update(r.answer.usage)
+    for a in every_answer:
+        tokens.update(a.usage)
     prompt = sum(
         tokens[k]
         for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
@@ -379,7 +492,7 @@ def render_report(results: list[Result], settings, prompt_version: str, when: da
         f"| Cost per 100 questions | ${100 * cost / len(results):.2f} |",
         f"| Tokens | {prompt:,} input ({tokens['cache_read_input_tokens']:,} from the cache), "
         f"{tokens['output_tokens']:,} output |",
-        f"| Mean time per answer | {seconds / len(results):.1f} seconds |",
+        f"| Mean time per answer | {seconds / len(every_answer):.1f} seconds |",
     ]
 
     for title, key, order in (
@@ -396,11 +509,11 @@ def render_report(results: list[Result], settings, prompt_version: str, when: da
         for group in order:
             ids = [qid for qid, rs in grouped.items() if key(rs[0].question) == group]
             if ids:
-                answers = [r for qid in ids for r in grouped[qid]]
-                good = sum(r.score.passed for r in answers)
+                in_group = [r for qid in ids for r in grouped[qid]]
+                good = sum(r.score.passed for r in in_group)
                 out.append(
                     f"| {group} | {_share(sum(q in every_run for q in ids), len(ids))} "
-                    f"| {_share(good, len(answers))} |"
+                    f"| {_share(good, len(in_group))} |"
                 )
 
     out += [
@@ -416,7 +529,7 @@ def render_report(results: list[Result], settings, prompt_version: str, when: da
         calls = ", ".join(str(len(r.answer.steps)) for r in rs)
         out.append(
             f"| {qid} | {q.difficulty} | {q.kind} | {verdict} | {calls} "
-            f"| ${sum(r.answer.cost_usd for r in rs):.4f} |"
+            f"| ${sum(a.cost_usd for r in rs for a in answers(r)):.4f} |"
         )
 
     out += ["", "## Failures", ""]
