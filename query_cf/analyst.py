@@ -191,6 +191,7 @@ class Answer:
     usage: dict
     cost_usd: float
     model_version: str | None
+    seconds: float = 0.0
     log_location: str | None = None
 
 
@@ -208,6 +209,11 @@ class Analyst:
             self.system_prompt = build_system_prompt(self.toolbox.layer, rules_section())
         self.tools = self.toolbox.definitions()
         self.version = prompt_version(self.system_prompt, self.tools)
+        self.new_conversation()
+
+    def new_conversation(self) -> None:
+        """Forget earlier questions, so the next one is asked on its own."""
+        self.messages = []
         self.conversation_id = uuid.uuid4().hex
         self.turn = 0
 
@@ -251,7 +257,8 @@ class Analyst:
             reply["is_error"] = True
         return step, reply
 
-    def ask(self, question: str) -> Answer:
+    def ask(self, question: str, tags: dict | None = None) -> Answer:
+        """Answer one question; tags, such as the evaluation question ID, go in the log."""
         self.turn += 1
         asked_at, started = datetime.now(UTC), time.perf_counter()
         steps, request_ids, served = [], [], None
@@ -342,6 +349,7 @@ class Analyst:
             "usage": usage,
             "cost_usd": round(cost, 6),
             "request_ids": request_ids,
+            "tags": dict(tags or {}),
         }
         answer = Answer(
             question_id=record["question_id"],
@@ -351,6 +359,7 @@ class Analyst:
             usage=usage,
             cost_usd=record["cost_usd"],
             model_version=served,
+            seconds=record["seconds"],
         )
         if self.log is not None:
             answer.log_location = self.log.write(record)

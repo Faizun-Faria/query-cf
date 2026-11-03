@@ -13,6 +13,7 @@
     python run_pipeline.py check-accounts   # phase 4: test the Claude API key and MongoDB
     python run_pipeline.py ask "How many credit card complaints did Citi receive in 2025?"
     python run_pipeline.py chat             # phase 4: questions and follow-ups in a row
+    python run_pipeline.py evaluate         # phase 5: score the analyst on evals/questions.csv
 
     python run_pipeline.py ingest --export CCDB_Export_21_August_2026.zip
 
@@ -40,6 +41,8 @@ from query_cf.storage import open_store
 DEFAULT_RAW = os.environ.get("QUERY_CF_RAW", "data/raw")
 DEFAULT_DB = os.environ.get("QUERY_CF_DB", "data/warehouse/query_cf.duckdb")
 CATALOG = Path(__file__).resolve().parent / "docs" / "08-metric-catalog.md"
+QUESTIONS = Path(__file__).resolve().parent / "evals" / "questions.csv"
+REPORT = Path(__file__).resolve().parent / "docs" / "12-evaluation-results.md"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -102,6 +105,18 @@ def build_parser() -> argparse.ArgumentParser:
     ask = commands.add_parser("ask", help="ask the AI analyst one question in plain English")
     ask.add_argument("question")
     commands.add_parser("chat", help="ask the AI analyst questions and follow-ups in a row")
+    evaluate = commands.add_parser(
+        "evaluate", help="ask the analyst every evaluation question and score the answers"
+    )
+    evaluate.add_argument("--questions", type=Path, default=QUESTIONS)
+    evaluate.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="only this question, such as Q04 (repeatable); the report isn't rewritten",
+    )
+    evaluate.add_argument("--report", type=Path, help=f"results file (default {REPORT.name})")
     return parser
 
 
@@ -385,6 +400,58 @@ def cmd_chat(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    from datetime import UTC, datetime
+
+    from query_cf import evaluate
+
+    try:
+        questions = evaluate.load_questions(args.questions)
+    except evaluate.EvaluationError as exc:
+        print(f"Questions error: {exc}")
+        return 2
+    if args.only:
+        unknown = sorted(set(args.only) - {q.id for q in questions})
+        if unknown:
+            print(f"Not in {args.questions.name}: {', '.join(unknown)}")
+            return 2
+        questions = [q for q in questions if q.id in args.only]
+
+    analyst = start_analyst(args)
+    if analyst is None:
+        return 1
+    settings = analyst.settings
+    asking = plural(len(questions), "question")
+    print(f"Asking {asking} with {settings.model} at {settings.effort} effort")
+    try:
+        results = evaluate.run(questions, analyst, analyst.toolbox.layer)
+    finally:
+        analyst.toolbox.conn.close()
+
+    passed = sum(r.score.passed for r in results)
+    cost = sum(r.answer.cost_usd for r in results)
+    print(f"\nPassed {passed} of {len(results)}. The run cost ${cost:.4f}.")
+    for r in results:
+        if not r.score.passed:
+            print(f"  {r.question.id}: {'; '.join(r.score.misses)}")
+
+    errors = [r.question.id for r in results if r.answer.outcome == "error"]
+    if errors:
+        print(f"\nThe Claude API failed on {', '.join(errors)}, so no report was written.")
+        return 1
+    report = args.report or (None if args.only else REPORT)
+    if report is None:
+        print(
+            "\nOnly some questions ran, so the report wasn't rewritten. Add --report to write one."
+        )
+        return 0
+    report.parent.mkdir(parents=True, exist_ok=True)
+    text = evaluate.render_report(results, settings, analyst.version, datetime.now(UTC))
+    report.write_text(text, encoding="utf-8")
+    print(f"Results written to {report}")
+    return 0
+
+
 def cmd_check_accounts(args: argparse.Namespace) -> int:
     import anthropic
 
@@ -478,6 +545,7 @@ COMMANDS = {
     "check-accounts": cmd_check_accounts,
     "ask": cmd_ask,
     "chat": cmd_chat,
+    "evaluate": cmd_evaluate,
 }
 
 

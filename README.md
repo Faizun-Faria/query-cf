@@ -4,7 +4,7 @@ A conversational AI analyst that turns plain-English questions into validated SQ
 
 The AI part only works because of what sits underneath it: an audited complaints warehouse, and a semantic layer that defines every metric, so the analyst reads precise definitions instead of guessing from raw tables.
 
-> **Status:** phases 0-4 are done. The CFPB archive is ingested, audited and modelled into a tested star schema, a semantic layer defines every metric, and an AI analyst answers plain-English questions from those definitions, showing and logging its working; the evaluation comes next. See the [roadmap](#roadmap).
+> **Status:** phases 0-4 are done, and phase 5 is under way. The CFPB archive is ingested, audited and modelled into a tested star schema, a semantic layer defines every metric, and an AI analyst answers plain-English questions from those definitions, showing and logging its working. It is scored on an evaluation set with answers computed in SQL: see the [evaluation results](docs/12-evaluation-results.md). See the [roadmap](#roadmap).
 
 ![Architecture: data sources feed audited ingestion, a dbt warehouse and a semantic layer; the AI analyst answers only from defined metrics](docs/images/architecture.png)
 
@@ -25,6 +25,7 @@ Framing documents:
 - [Metric catalog](docs/08-metric-catalog.md)
 - [Analyst rules](docs/09-analyst-rules.md)
 - [AI analyst design](docs/10-ai-analyst.md)
+- [Evaluation design](docs/11-evaluation.md) and [results](docs/12-evaluation-results.md)
 
 ## Data
 
@@ -57,6 +58,7 @@ python run_pipeline.py check-semantic   # run every semantic definition on the w
 python run_pipeline.py check-accounts   # check the Claude API key and MongoDB, at no cost
 python run_pipeline.py ask "How many credit card complaints did Citi receive in 2025?"
 python run_pipeline.py chat             # questions and follow-ups in a row
+python run_pipeline.py evaluate         # score the analyst on evals/questions.csv
 pytest
 ```
 
@@ -112,6 +114,15 @@ The [analyst rules](docs/09-analyst-rules.md) say what it does; the [design](doc
 - **Working shown.** Every answer prints each query that ran, its SQL and row count, then the tokens and cost.
 - **Every question logged.** One record per question, with every step, the model version and the cost, in MongoDB Atlas, or in a local file when MongoDB isn't set up.
 
+## How the evaluation works
+
+The [evaluation design](docs/11-evaluation.md) has the details.
+
+- **Answers computed first.** Each question in `evals/questions.csv` has an expected answer computed in SQL (`evals/answer_key.sql`) before the analyst ever ran.
+- **Scored by code.** Every expected figure and name must be in the answer, from a query that ran; a clarifying question must be exactly one question with no query; a question the data can't answer must run nothing and offer a defined metric instead. The same answer always gets the same score.
+- **Reported by difficulty and kind,** with the measured cost per 100 questions and every failure with its answer.
+- **Re-run before any model change.** A test fails if the committed results came from a different model or effort than the one pinned.
+
 ## Project layout
 
 ```text
@@ -127,6 +138,7 @@ query_cf/               pipeline package
   tools.py              the analyst's tools: metric queries, value lookup, guarded SQL
   analyst.py            the Claude tool-use loop, system prompt and cost
   questionlog.py        logs every question to MongoDB Atlas or a local file
+  evaluate.py           runs the evaluation questions, scores the answers, writes the results
 config/sources/         one YAML file per source
 config/analyst.yaml     the analyst's model, effort level, limits and prices
 warehouse/              dbt project: seeds, staging, quality and mart models, tests
@@ -148,7 +160,7 @@ The MVP is phases 0-5, published at the MVP gate; phases 6-8 follow.
 - [x] **2. Warehouse:** dbt on DuckDB, with staging and mart models, data tests, a quarantine table, a completeness check and a star schema
 - [x] **3. Semantic layer:** every metric and dimension defined, with join paths, column descriptions and a glossary
 - [x] **4. AI analyst:** question → plan → SQL → sqlglot safety check → run → answer with SQL, row count and assumptions; every question logged
-- [ ] **5. Evaluation:** 50 questions with answers computed in SQL; accuracy by difficulty, run in CI
+- [ ] **5. Evaluation:** 50 questions with answers computed in SQL, scored by code; accuracy by difficulty and kind. 25 questions so far, with [results](docs/12-evaluation-results.md); CI tests the scoring, and the run itself needs the warehouse and an API key, so it runs locally
 - [ ] **6. App and formats:** Streamlit chat app returning a number, a chart or a short report; public demo with usage limits
 - [ ] **7. Showcase:** "Were unauthorised-account complaints rising at Wells Fargo before September 2016?", answered through the analyst
 - [ ] **8. Operate:** scheduled runs, CI running tests and evals, a runbook, rebuild from raw
@@ -159,7 +171,7 @@ These figures are measured from phase 4 onward, and none are estimated.
 
 | Item | Value |
 | --- | --- |
-| Cost per 100 questions answered | Not measured yet. Every answer prints and logs its cost; phase 5 reports it |
+| Cost per 100 questions answered | Measured on every evaluation run: see the [evaluation results](docs/12-evaluation-results.md) |
 | Monthly cost of the public demo | Not measured yet (phase 6) |
 | Pinned model version | `claude-haiku-5-5` at `high` effort, in `config/analyst.yaml`. The evaluation set is re-run before any model change |
 | Known failure points | Ambiguous questions (the analyst asks one clarifying question) and undefined metrics (refused, with the closest defined metrics). Detection checks arrive in phases 4-5 |
