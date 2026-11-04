@@ -2,6 +2,8 @@
 
 A Streamlit chat app over the same analyst as `ask` and `chat`: a visitor asks in plain English and gets the answer in the format that fits it, with every query behind it (US-07, US-13). Each visitor has their own conversation, so follow-up questions work (R-24), and every question goes to the question log tagged `source: app` (US-11).
 
+The public demo runs on Streamlit Community Cloud at [query-cf.streamlit.app](https://query-cf.streamlit.app). To run the app locally:
+
 ```bash
 streamlit run app/streamlit_app.py
 ```
@@ -55,4 +57,4 @@ The app reads `ANTHROPIC_API_KEY` and `QUERY_CF_MONGODB_URI` from `.env` locally
 - Each format rule is checked on the planted warehouse: a number, a line chart labelled 2016 to 2025, a bar chart with the largest at the top, percentages, a year from SQL, a report, and text when no query ran.
 - Every limit refuses what it should; spending is counted only for the app's questions since midnight, adds what fell back to the file, and stops the demo when it can't be counted.
 - The demo data is downloaded once, checked, and deleted when its SHA-256 doesn't match; `demo-warehouse` copies the four mart tables and nothing else.
-- The page itself runs under Streamlit's own test runner with a fake model: a number with its SQL shown, a chart, an example question clicked, the question limit, and a missing API key.
+- The page itself runs under Streamlit's own test runner with a fake model: a number with its SQL shown, a chart, an example question clicked, the count of questions left dropping as soon as an answer appears, the question limit, and a missing API key.

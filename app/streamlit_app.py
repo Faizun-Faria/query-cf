@@ -85,12 +85,18 @@ with st.sidebar:
         "Complaints are unverified consumer reports: a count shows what was reported, not what "
         "happened."
     )
-    left = max(limits.questions_per_session - len(st.session_state.answers), 0)
-    st.markdown(f"**{present.plural(left, 'question')} left in this visit.**")
+    counter = st.empty()  # filled again after each answer, since the sidebar is drawn first
     st.markdown("Try one of these:")
     clicked = [q for n, q in enumerate(EXAMPLES) if st.button(q, key=f"example-{n}")]
     st.markdown(f"[Code and evaluation results on GitHub]({REPO})")
 
+
+def show_questions_left() -> None:
+    left = max(limits.questions_per_session - len(st.session_state.answers), 0)
+    counter.markdown(f"**{present.plural(left, 'question')} left in this visit.**")
+
+
+show_questions_left()
 st.title("Ask about consumer finance complaints")
 for question, answer in st.session_state.answers:
     show(question, answer)
@@ -110,4 +116,5 @@ if question:
             tags = {"source": webapp.SOURCE, "session": st.session_state.session}
             answer = analyst.ask(question, tags=tags)
         st.session_state.answers.append((question, answer))
+        show_questions_left()
         show(question, answer)

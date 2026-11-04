@@ -336,6 +336,19 @@ def test_an_example_question_can_be_asked_with_one_click(page):
     )
 
 
+def questions_left(page):
+    return [m.value for m in page.sidebar.markdown if "left in this visit" in m.value]
+
+
+def test_the_questions_left_count_drops_as_soon_as_an_answer_appears(page):
+    page.run()
+    assert questions_left(page) == ["**10 questions left in this visit.**"]
+    page.client.responses += [response(text("Asked."))]
+    page.chat_input[0].set_value("First question?").run()
+    assert not page.exception
+    assert questions_left(page) == ["**9 questions left in this visit.**"]
+
+
 def test_the_page_stops_at_the_question_limit(page, monkeypatch):
     limited = replace(
         webapp.load_app_settings(),

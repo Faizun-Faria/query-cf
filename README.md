@@ -4,7 +4,9 @@ A conversational AI analyst that turns plain-English questions into validated SQ
 
 The AI part only works because of what sits underneath it: an audited complaints warehouse, and a semantic layer that defines every metric, so the analyst reads precise definitions instead of guessing from raw tables.
 
-> **Status:** phases 0-5 are done. The CFPB archive is ingested, audited and modelled into a tested star schema, a semantic layer defines every metric, and an AI analyst answers plain-English questions from those definitions, showing and logging its working. It is scored on 50 evaluation questions with answers computed in SQL: see the [evaluation results](docs/12-evaluation-results.md). See the [roadmap](#roadmap).
+**Try it: [query-cf.streamlit.app](https://query-cf.streamlit.app).** If nobody has used it for 12 hours it is asleep, and waking it takes about a minute.
+
+> **Status:** phases 0-6 are done. The CFPB archive is ingested, audited and modelled into a tested star schema, a semantic layer defines every metric, and an AI analyst answers plain-English questions from those definitions, showing and logging its working. It is scored on 50 evaluation questions with answers computed in SQL: see the [evaluation results](docs/12-evaluation-results.md). A public chat app answers with a number, a chart or a short report, within usage limits. See the [roadmap](#roadmap).
 
 ![Architecture: data sources feed audited ingestion, a dbt warehouse and a semantic layer; the AI analyst answers only from defined metrics](docs/images/architecture.png)
 
@@ -177,7 +179,7 @@ The MVP is phases 0-5, published at the MVP gate; phases 6-8 follow.
 - [x] **3. Semantic layer:** every metric and dimension defined, with join paths, column descriptions and a glossary
 - [x] **4. AI analyst:** question → plan → SQL → sqlglot safety check → run → answer with SQL, row count and assumptions; every question logged
 - [x] **5. Evaluation:** 50 questions with answers computed in SQL, scored by code, each asked three times; accuracy by difficulty and kind, with [results](docs/12-evaluation-results.md). CI tests the scoring; the run itself needs the warehouse and an API key, so it runs locally
-- [ ] **6. App and formats:** Streamlit chat app returning a number, a chart or a short report; public demo with usage limits
+- [x] **6. App and formats:** Streamlit chat app returning a number, a chart or a short report; [public demo](https://query-cf.streamlit.app) with usage limits
 - [ ] **7. Showcase:** "Were unauthorised-account complaints rising at Wells Fargo before September 2016?", answered through the analyst
 - [ ] **8. Operate:** scheduled runs, CI running tests and evals, a runbook, rebuild from raw
 
@@ -188,7 +190,7 @@ These figures are measured from phase 4 onward, and none are estimated.
 | Item | Value |
 | --- | --- |
 | Cost per 100 questions answered | Measured on every evaluation run: see the [evaluation results](docs/12-evaluation-results.md) |
-| Monthly cost of the public demo | Not measured yet (phase 6) |
+| Monthly cost of the public demo | Not measured yet: the demo went live in November 2026, and its first month will be added up from the question log |
 | Pinned model version | `claude-haiku-5-5` at `high` effort, in `config/analyst.yaml`. The evaluation set is re-run before any model change |
 | Known failure points | Ambiguous questions (the analyst asks one clarifying question) and undefined metrics (refused, with the closest defined metrics). Detection checks arrive in phases 4-5 |
 
