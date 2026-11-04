@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -180,7 +181,14 @@ def spent_today(log) -> float | None:
     midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     try:
         return log.spent_since(midnight, SOURCE)
-    except Exception:  # a database that can't be reached must stop spending, not guess
+    except Exception as exc:  # a database that can't be reached must stop spending, not guess
+        # Visitors only see that the demo is paused; the reason goes to the app's log.
+        reason = str(exc).splitlines()[0][:300] if str(exc) else ""
+        print(
+            f"QueryCF paused: can't count today's spending: {type(exc).__name__}: {reason}",
+            file=sys.stderr,
+            flush=True,
+        )
         return None
 
 

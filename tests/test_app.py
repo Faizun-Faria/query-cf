@@ -168,12 +168,15 @@ def test_mongodb_spending_adds_what_fell_back_to_the_file(tmp_path):
     assert webapp.spent_today(log) == pytest.approx(0.6)
 
 
-def test_spending_that_cant_be_counted_pauses_the_demo():
+def test_spending_that_cant_be_counted_pauses_the_demo_and_logs_why(capsys):
     class Unreachable:
         def spent_since(self, since, source):
             raise ConnectionError("no route to the cluster")
 
     assert webapp.spent_today(Unreachable()) is None
+    assert "can't count today's spending: ConnectionError: no route to the cluster" in (
+        capsys.readouterr().err
+    )
 
 
 def test_the_app_settings_are_checked(tmp_path):
