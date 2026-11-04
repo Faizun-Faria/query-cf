@@ -10,10 +10,10 @@ limits:
 # The demo's copy of the warehouse: only the four mart tables the analyst reads (D-052),
 # made by `python run_pipeline.py demo-warehouse` and uploaded as a GitHub release asset.
 # The app downloads it on first start when no full warehouse is present, and checks its
-# SHA-256 before using it. Fill in url and sha256 after the upload.
+# SHA-256 before using it. A new copy needs a new release and both values changed together.
 demo_data:
-  url: ""
-  sha256: ""
+  url: https://github.com/Faizun-Faria/query-cf/releases/download/demo-data-v1/query_cf_demo.duckdb
+  sha256: 42293cc09a54b84f3d10db4296a9998545e57bf7400189ba1893ed7fac43fd8d  # 253 MB
   file: data/demo/query_cf_demo.duckdb
 
 # Streamlit Community Cloud gives an app at most about 2.7 GB of memory.
